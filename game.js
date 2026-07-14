@@ -1408,7 +1408,14 @@
           this.loadStage(this.selectedStageIdx);
           // If in WebRTC online mode and we are the host, notify the guest client
           if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-            this.net.sendState({ type: 'launch', stageIdx: this.selectedStageIdx });
+            let attempts = 0;
+            const interval = setInterval(() => {
+              if (this.net.conn && this.net.conn.open) {
+                this.net.sendState({ type: 'launch', stageIdx: this.selectedStageIdx });
+              }
+              attempts++;
+              if (attempts >= 4) clearInterval(interval);
+            }, 100);
           }
         });
       }

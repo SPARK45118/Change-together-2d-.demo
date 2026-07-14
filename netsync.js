@@ -108,10 +108,10 @@ class NetSync {
       this.peer.on('open', () => {
         console.log('[NetSync] Connecting to host:', targetHostId);
 
-        // Use reliable: true — short JSON payloads don't benefit from
-        // unreliable (UDP) transport, and dropped packets cause visual jitter.
+        // Use reliable: false (unreliable/UDP mode) for minimum latency and real-time responsiveness.
+        // To handle packet loss for initial critical setup states (like launch/joined), we will send connection setup messages reliably.
         const conn = this.peer.connect(targetHostId, {
-          reliable: true
+          reliable: false
         });
 
         this._setupConnection(conn);
@@ -162,8 +162,16 @@ class NetSync {
       document.getElementById('connectingOverlay').classList.add('hidden');
 
       if (this.isHost) {
-        // Tell the client that they are connected and should wait
-        this.sendState({ type: 'joined', role: 'client' });
+        // Send 'joined' multiple times with a small delay to guarantee client receives it and doesn't get stuck in lobby
+        let attempts = 0;
+        const interval = setInterval(() => {
+          if (this.conn && this.conn.open) {
+            this.sendState({ type: 'joined', role: 'client' });
+          }
+          attempts++;
+          if (attempts >= 5 || !this.connected) clearInterval(interval);
+        }, 150);
+
         // Host goes to stage select
         this.game.netLaunchGame();
       } else {
