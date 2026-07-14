@@ -58,7 +58,7 @@
     EXIT: '#00ff66',
   };
 
-  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6 };
+  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6, MODE_SELECT: 7 };
 
   // ============================================================
   // UTILITIES
@@ -813,6 +813,8 @@
       this.state = STATE.MENU;
       this.stageIdx = 0;
       this.selectedStageIdx = 0;
+      this.gameMode = 'multi';   // 'single' | 'multi'
+      this.selectedMode = 1;     // 0=single 1=multi
       this.tick = 0;
       this.stageTime = 0;
       this.deaths = 0;
@@ -856,8 +858,11 @@
       const old = document.getElementById('touchControls');
       if (old) old.remove();
 
+      const multi = this.gameMode === 'multi';
       const ui = document.createElement('div');
       ui.id = 'touchControls';
+      // In single-player mode the P1 pad is centered; in multi both sides show.
+      ui.className = multi ? '' : 'tc-solo';
       ui.innerHTML = `
         <div class="tc-player" id="tcP1">
           <div class="tc-label">P1</div>
@@ -867,6 +872,7 @@
             <button class="tc-btn" id="tcP1R">&#9654;</button>
           </div>
         </div>
+        ${multi ? `
         <div class="tc-player" id="tcP2">
           <div class="tc-label">P2</div>
           <div class="tc-row">
@@ -874,17 +880,20 @@
             <button class="tc-btn tc-jump" id="tcP2J">&#9650;</button>
             <button class="tc-btn" id="tcP2R">&#9654;</button>
           </div>
-        </div>
+        </div>` : ''}
       `;
       document.body.appendChild(ui);
 
-      // Wire up buttons to key codes
+      // Wire up P1 buttons
       _registerTouchBtn(document.getElementById('tcP1L'), 'KeyA');
       _registerTouchBtn(document.getElementById('tcP1R'), 'KeyD');
       _registerTouchBtn(document.getElementById('tcP1J'), 'KeyW');
-      _registerTouchBtn(document.getElementById('tcP2L'), 'ArrowLeft');
-      _registerTouchBtn(document.getElementById('tcP2R'), 'ArrowRight');
-      _registerTouchBtn(document.getElementById('tcP2J'), 'ArrowUp');
+      // Wire P2 buttons only in multiplayer
+      if (multi) {
+        _registerTouchBtn(document.getElementById('tcP2L'), 'ArrowLeft');
+        _registerTouchBtn(document.getElementById('tcP2R'), 'ArrowRight');
+        _registerTouchBtn(document.getElementById('tcP2J'), 'ArrowUp');
+      }
     }
 
     // --- stage loading ---
@@ -1010,6 +1019,7 @@
 
       switch (this.state) {
         case STATE.MENU: this._updateMenu(); break;
+        case STATE.MODE_SELECT: this._updateModeSelect(); break;
         case STATE.STAGE_SELECT: this._updateStageSelect(); break;
         case STATE.INTRO: this._updateIntro(); break;
         case STATE.PLAYING: this._updatePlay(); break;
@@ -1021,14 +1031,35 @@
 
     _updateMenu() {
       this.menuBlink++;
-      // Allow tap/click anywhere on canvas to start (mobile friendly)
       if (keys['Enter'] || keys['Space'] || keys['__TAP__']) {
         keys['__TAP__'] = false;
         this.snd.init();
         this.startFade(1, () => {
+          this.state = STATE.MODE_SELECT;
+        });
+      }
+    }
+
+    _updateModeSelect() {
+      this.menuBlink++;
+      // Left / Right (or A/D) to switch mode
+      if (consumeJustPressed('ArrowLeft') || consumeJustPressed('KeyA')) {
+        this.selectedMode = 0; this.snd.land();
+      }
+      if (consumeJustPressed('ArrowRight') || consumeJustPressed('KeyD')) {
+        this.selectedMode = 1; this.snd.land();
+      }
+      // Confirm
+      if (consumeJustPressed('Enter') || consumeJustPressed('Space') || consumeJustPressed('__TAP__')) {
+        this.gameMode = this.selectedMode === 0 ? 'single' : 'multi';
+        if (IS_MOBILE) this._buildTouchUI();
+        this.startFade(1, () => {
           this.state = STATE.STAGE_SELECT;
           this.selectedStageIdx = 0;
         });
+      }
+      if (consumeJustPressed('Escape')) {
+        this.startFade(1, () => { this.state = STATE.MENU; });
       }
     }
 
@@ -1075,8 +1106,8 @@
         this.state = STATE.PLAYING;
       }
       // camera idle at spawn
-      const midX = (this.p1.cx + this.p2.cx) / 2;
-      const midY = (this.p1.cy + this.p2.cy) / 2;
+      const midX = this.gameMode === 'multi' ? (this.p1.cx + this.p2.cx) / 2 : this.p1.cx;
+      const midY = this.gameMode === 'multi' ? (this.p1.cy + this.p2.cy) / 2 : this.p1.cy;
       this.cam.follow(midX, midY, this.wb);
     }
 
@@ -1119,26 +1150,37 @@
         }
       }
 
-      // chain forces for this frame
-      const cf = this.chain.forces(
-        this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy,
-        this.p1.gnd, this.p2.gnd
-      );
+      const isSingle = this.gameMode === 'single';
 
-      // update players
+      // chain forces (multiplayer only)
+      let cf = null;
+      if (!isSingle) {
+        cf = this.chain.forces(
+          this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy,
+          this.p1.gnd, this.p2.gnd
+        );
+      }
+
+      // update P1
       const r1 = this.p1.update(this.plats,
-        cf.a.fx, cf.a.fy,
-        cf.a.cx !== undefined ? { cx: cf.a.cx, cy: cf.a.cy } : null,
+        cf ? cf.a.fx : 0, cf ? cf.a.fy : 0,
+        cf && cf.a.cx !== undefined ? { cx: cf.a.cx, cy: cf.a.cy } : null,
         this.ptcl, this.snd, this.wb);
-      const r2 = this.p2.update(this.plats,
-        cf.b.fx, cf.b.fy,
-        cf.b.cx !== undefined ? { cx: cf.b.cx, cy: cf.b.cy } : null,
-        this.ptcl, this.snd, this.wb);
+
+      // update P2 (multiplayer only)
+      let r2 = null;
+      if (!isSingle) {
+        r2 = this.p2.update(this.plats,
+          cf.b.fx, cf.b.fy,
+          cf.b.cx !== undefined ? { cx: cf.b.cx, cy: cf.b.cy } : null,
+          this.ptcl, this.snd, this.wb);
+      }
 
       // update drones
+      const activePlayers = isSingle ? [this.p1] : [this.p1, this.p2];
       for (const d of this.drones) {
         if (d.dead) continue;
-        d.update([this.p1, this.p2], this.snd, this.ptcl, () => this._die());
+        d.update(activePlayers, this.snd, this.ptcl, () => this._die());
         const checkHit = (p) => {
           const dy = d.y + Math.sin(d.animT * 0.1) * 3;
           if (p.x < d.x + d.w && p.x + p.w > d.x && p.y < dy + d.h && p.y + p.h > dy) {
@@ -1153,36 +1195,42 @@
           }
           return null;
         };
-        if (checkHit(this.p1) === 'death' || checkHit(this.p2) === 'death') {
-          this._die(); return;
-        }
+        const hit1 = checkHit(this.p1);
+        const hit2 = !isSingle && checkHit(this.p2);
+        if (hit1 === 'death' || hit2 === 'death') { this._die(); return; }
       }
 
-      // check deaths
-      if (r1 === 'death' || r2 === 'death' ||
-        this.p1.hitHazard(this.haz) || this.p2.hitHazard(this.haz) ||
-        (this.chainHeat || 0) >= CONFIG.CHAIN_SNAP_TIME) {
+      // death checks
+      const chainSnap = !isSingle && (this.chainHeat || 0) >= CONFIG.CHAIN_SNAP_TIME;
+      if (r1 === 'death' || (!isSingle && r2 === 'death') ||
+        this.p1.hitHazard(this.haz) || (!isSingle && this.p2.hitHazard(this.haz)) ||
+        chainSnap) {
         this._die(); return;
       }
 
-      // update chain visuals
-      this.chain.update(this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy, this.plats);
-
-      if (this.chain.tension > 0.6) {
-        this.chainHeat = (this.chainHeat || 0) + 1;
-        if (this.tick % 30 === 0) this.snd.taut();
-      } else {
-        this.chainHeat = Math.max(0, (this.chainHeat || 0) - 2);
+      // chain update (multiplayer only)
+      if (!isSingle) {
+        this.chain.update(this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy, this.plats);
+        if (this.chain.tension > 0.6) {
+          this.chainHeat = (this.chainHeat || 0) + 1;
+          if (this.tick % 30 === 0) this.snd.taut();
+        } else {
+          this.chainHeat = Math.max(0, (this.chainHeat || 0) - 2);
+        }
       }
 
       // exit check
       this.p1.atExit = this.p1.inExit(this.exit);
-      this.p2.atExit = this.p2.inExit(this.exit);
-      if (this.p1.atExit && this.p2.atExit) this._stageWin();
+      if (isSingle) {
+        if (this.p1.atExit) this._stageWin();
+      } else {
+        this.p2.atExit = this.p2.inExit(this.exit);
+        if (this.p1.atExit && this.p2.atExit) this._stageWin();
+      }
 
-      // camera
-      const mx = (this.p1.cx + this.p2.cx) / 2;
-      const my = (this.p1.cy + this.p2.cy) / 2;
+      // camera follows midpoint (multi) or P1 (single)
+      const mx = isSingle ? this.p1.cx : (this.p1.cx + this.p2.cx) / 2;
+      const my = isSingle ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
     }
 
@@ -1193,14 +1241,16 @@
       this.cam.shake(10);
       this.snd.death();
       this.ptcl.emit(this.p1.cx, this.p1.cy, 20, COL.P1, { sMin: -5, sMax: 5, life: 40, sz: 4 });
-      this.ptcl.emit(this.p2.cx, this.p2.cy, 20, COL.P2, { sMin: -5, sMax: 5, life: 40, sz: 4 });
+      if (this.gameMode === 'multi') {
+        this.ptcl.emit(this.p2.cx, this.p2.cy, 20, COL.P2, { sMin: -5, sMax: 5, life: 40, sz: 4 });
+      }
       document.getElementById('deathCount').textContent = this.deaths;
     }
 
     _updateDying() {
       this.deathCD--;
-      const mx = (this.p1.cx + this.p2.cx) / 2;
-      const my = (this.p1.cy + this.p2.cy) / 2;
+      const mx = this.gameMode === 'single' ? this.p1.cx : (this.p1.cx + this.p2.cx) / 2;
+      const my = this.gameMode === 'single' ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
       if (this.deathCD <= 0) { this.respawn(); this.state = STATE.PLAYING; }
     }
@@ -1270,6 +1320,7 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (this.state === STATE.MENU) { this._renderMenu(); }
+      else if (this.state === STATE.MODE_SELECT) { this._renderModeSelect(); }
       else if (this.state === STATE.STAGE_SELECT) { this._renderStageSelect(); }
       else { this._renderGame(); }
 
@@ -1499,19 +1550,148 @@
       }
       ctx.stroke(); ctx.shadowBlur = 0;
 
-      // controls
+      // controls hint (keyboard only on desktop)
       const ctrlY = cy + 165;
-      ctx.font = '14px Orbitron, sans-serif';
-      ctx.fillStyle = COL.P1;
-      ctx.fillText('Player 1 :  W  A  D', cx - 160, ctrlY);
-      ctx.fillStyle = COL.P2;
-      ctx.fillText('Player 2 :  ↑  ←  →', cx + 160, ctrlY);
+      if (!IS_MOBILE) {
+        ctx.font = '14px Orbitron, sans-serif';
+        ctx.fillStyle = COL.P1;
+        ctx.fillText('Player 1 :  W  A  D', cx - 160, ctrlY);
+        ctx.fillStyle = COL.P2;
+        ctx.fillText('Player 2 :  ↑  ←  →', cx + 160, ctrlY);
+      }
 
       // prompt
       if ((this.menuBlink / 28 | 0) & 1) {
         ctx.fillStyle = '#fff'; ctx.font = '17px Orbitron, sans-serif';
-        ctx.fillText('Press ENTER to Start', cx, ctrlY + 55);
+        ctx.fillText(IS_MOBILE ? 'TAP  TO  START' : 'Press ENTER to Start', cx, ctrlY + (IS_MOBILE ? 20 : 55));
       }
+    }
+
+    // --- MODE SELECT ---
+    _renderModeSelect() {
+      const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      g.addColorStop(0, '#0a0a2e'); g.addColorStop(1, '#1a0520');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      this.stars.draw(ctx, 0, 0, this.tick);
+
+      const cxs = canvas.width / 2;
+      const cys = canvas.height / 2;
+
+      // Title
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 28px Orbitron, sans-serif';
+      ctx.shadowBlur = 20; ctx.shadowColor = '#ffd700';
+      ctx.fillText('SELECT  MODE', cxs, cys - 155);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      // Two mode cards
+      const cardW = Math.min(200, canvas.width * 0.38);
+      const cardH = 220;
+      const gap   = Math.min(40, canvas.width * 0.06);
+      const card0X = cxs - gap / 2 - cardW;  // SOLO
+      const card1X = cxs + gap / 2;           // CO-OP
+      const cardY  = cys - cardH / 2 - 10;
+
+      const modes = [
+        { label: 'SOLO',   sub: 'One player,\none goal',  col: COL.P1, idx: 0 },
+        { label: 'CO-OP',  sub: 'Two players,\none chain', col: COL.P2, idx: 1 },
+      ];
+
+      modes.forEach((m, i) => {
+        const x   = i === 0 ? card0X : card1X;
+        const sel = this.selectedMode === m.idx;
+        const bob = sel ? Math.sin(this.tick * 0.12) * 5 : 0;
+        const y   = cardY + bob;
+
+        ctx.save();
+        ctx.shadowBlur = sel ? 30 : 6;
+        ctx.shadowColor = sel ? m.col : 'rgba(255,255,255,0.04)';
+        ctx.fillStyle = sel ? '#180830' : '#0c0720';
+        ctx.strokeStyle = sel ? m.col : '#2a1a4a';
+        ctx.lineWidth = sel ? 3 : 1.2;
+        roundRect(ctx, x, y, cardW, cardH, 14);
+        ctx.fill(); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Icon area
+        const iconCX = x + cardW / 2;
+        const iconY  = y + 62;
+
+        if (m.idx === 0) {
+          // Single character
+          ctx.shadowBlur = 14; ctx.shadowColor = m.col;
+          ctx.fillStyle = m.col;
+          roundRect(ctx, iconCX - 14, iconY - 24, 28, 38, 7); ctx.fill();
+          ctx.shadowBlur = 0;
+        } else {
+          // Two characters + chain
+          const p1x = iconCX - 36, p2x = iconCX + 10;
+          ctx.shadowBlur = 10; ctx.shadowColor = COL.P1;
+          ctx.fillStyle = COL.P1;
+          roundRect(ctx, p1x, iconY - 24, 24, 34, 6); ctx.fill();
+          ctx.shadowColor = COL.P2; ctx.fillStyle = COL.P2;
+          roundRect(ctx, p2x, iconY - 24, 24, 34, 6); ctx.fill();
+          ctx.shadowBlur = 0;
+          // chain
+          ctx.strokeStyle = COL.CHAIN; ctx.lineWidth = 2;
+          ctx.shadowBlur = 6; ctx.shadowColor = COL.CHAIN;
+          ctx.beginPath();
+          for (let t = 0; t <= 1; t += 0.1) {
+            const px = lerp(p1x + 24, p2x, t);
+            const py = iconY - 8 + Math.sin(t * Math.PI) * 10 + Math.sin(this.tick * 0.04 + t * 4) * 3;
+            t === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.stroke(); ctx.shadowBlur = 0;
+        }
+
+        // Label
+        ctx.textAlign = 'center';
+        ctx.fillStyle = sel ? m.col : 'rgba(255,255,255,0.7)';
+        ctx.font = `bold 22px Orbitron, sans-serif`;
+        ctx.shadowBlur = sel ? 12 : 0; ctx.shadowColor = m.col;
+        ctx.fillText(m.label, iconCX, y + 130);
+        ctx.shadowBlur = 0;
+
+        // Sub
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '11px Rajdhani, sans-serif';
+        m.sub.split('\n').forEach((line, li) => {
+          ctx.fillText(line, iconCX, y + 155 + li * 16);
+        });
+
+        // Selected indicator
+        if (sel) {
+          ctx.fillStyle = m.col;
+          ctx.shadowBlur = 8; ctx.shadowColor = m.col;
+          ctx.beginPath();
+          ctx.arc(iconCX, y + cardH - 18, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+
+        ctx.restore();
+      });
+
+      // Navigation hints
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '12px Orbitron, sans-serif';
+      const hintY = cardY + cardH + 36;
+      if (IS_MOBILE) {
+        ctx.fillText('TAP A CARD  ·  ENTER to confirm', cxs, hintY);
+      } else {
+        ctx.fillText('← → to select   ·   ENTER to confirm   ·   ESC to go back', cxs, hintY);
+      }
+      if ((this.menuBlink / 24 | 0) & 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Orbitron, sans-serif';
+        ctx.fillText('Press ENTER / Tap to Play', cxs, hintY + 28);
+      }
+      ctx.restore();
     }
 
     // --- GAME RENDERING ---
@@ -1535,11 +1715,15 @@
       this._drawHazards();
       for (const d of this.drones) d.draw(ctx);
       this._drawExit();
-      this.chain.draw(ctx, this.tick, this.chainHeat);
+
+      // Chain only drawn in multiplayer
+      if (this.gameMode === 'multi') {
+        this.chain.draw(ctx, this.tick, this.chainHeat);
+      }
 
       if (this.state !== STATE.DYING || this.deathCD > CONFIG.DEATH_COOLDOWN * 0.5) {
         this.p1.draw(ctx, this.tick);
-        this.p2.draw(ctx, this.tick);
+        if (this.gameMode === 'multi') this.p2.draw(ctx, this.tick);
       }
 
       this.ptcl.draw(ctx);
@@ -1548,21 +1732,18 @@
       // HUD updates
       document.getElementById('timer').textContent = this._fmtTime(this.stageTime);
 
-      // chain taut warning / heat
-      if ((this.chainHeat || 0) > 0 && this.state === STATE.PLAYING) {
+      // chain taut warning / heat (multiplayer only)
+      if (this.gameMode === 'multi' && (this.chainHeat || 0) > 0 && this.state === STATE.PLAYING) {
         const hPct = this.chainHeat / CONFIG.CHAIN_SNAP_TIME;
         ctx.save();
         ctx.globalAlpha = 0.6 + hPct * 0.4;
         ctx.fillStyle = hPct > 0.7 ? '#ff0000' : '#ff6600';
         ctx.font = 'bold 16px Orbitron, sans-serif';
         ctx.textAlign = 'center';
-
         const txt = hPct > 0.7 ? '⚠ OVERHEATING! ⚠' : '⚠ CHAIN TAUT ⚠';
         const sx = hPct > 0.7 ? rand(-2, 2) : 0;
         const sy = hPct > 0.7 ? rand(-2, 2) : 0;
-
         ctx.fillText(txt, canvas.width / 2 + sx, 95 + sy);
-
         ctx.fillRect(canvas.width / 2 - 60, 105, 120 * hPct, 6);
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
         ctx.strokeRect(canvas.width / 2 - 60, 105, 120, 6);
@@ -1764,15 +1945,42 @@
   // BOOT
   // ============================================================
 
+  // ---- Fullscreen + Landscape helpers ----
+  function requestFullscreen() {
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
+    if (req) req.call(el).catch(() => {});
+  }
+  function lockLandscape() {
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock('landscape').catch(() => {});
+      }
+    } catch (e) { /* not supported on all browsers */ }
+  }
+
   window.addEventListener('load', () => {
     const game = new Game();
 
-    // --- Canvas tap: works as Enter for menus, and inits audio ---
+    // --- Canvas tap: works as Enter for menus, inits audio, and handles mode-select ---
     canvas.addEventListener('touchstart', (e) => {
-      // Only route to __TAP__ when on a UI screen (not during play)
-      // During play the touch controls handle input instead.
       game.snd.init();
+      // Attempt fullscreen + landscape on first tap
+      requestFullscreen();
+      lockLandscape();
+
       const s = game.state;
+
+      // Mode select: tap left half = solo, right half = coop, then auto-confirm
+      if (s === STATE.MODE_SELECT) {
+        const touch = e.touches[0];
+        game.selectedMode = touch.clientX < canvas.width / 2 ? 0 : 1;
+        justPressed['__TAP__'] = true;
+        keys['__TAP__'] = true;
+        setTimeout(() => { keys['__TAP__'] = false; }, 100);
+        return;
+      }
+
       if (s === STATE.MENU || s === STATE.STAGE_SELECT ||
           s === STATE.STAGE_COMPLETE || s === STATE.INTRO) {
         justPressed['__TAP__'] = true;

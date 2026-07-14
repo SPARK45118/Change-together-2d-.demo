@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="screen-orientation" content="landscape">
   <meta name="description" content="Chained Together — A 2-player cooperative platformer where two characters connected by a chain must work together to clear stages.">
   <title>Chained Together | 2-Player Co-op Platformer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -76,6 +80,13 @@
       </div>
       <p class="overlay-prompt blink">Press R / Tap to Play Again</p>
     </div>
+  </div>
+
+  <!-- Portrait rotation warning -->
+  <div id="portraitOverlay">
+    <div class="rotate-icon">&#x1F4F1;</div>
+    <h2>ROTATE YOUR DEVICE</h2>
+    <p>This game is designed for landscape mode.<br>Please rotate your phone to play.</p>
   </div>
 
   <script src="stages.js"></script>
