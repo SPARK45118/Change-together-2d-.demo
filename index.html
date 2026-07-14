@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Chained Together — A 2-player cooperative platformer where two characters connected by a chain must work together to clear stages.">
+  <title>Chained Together | 2-Player Co-op Platformer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="hudLeft" class="hud-panel">
+      <div id="stageNum" class="hud-label">Stage 1/5</div>
+      <div id="stageTitle" class="hud-value">Tutorial Plains</div>
+    </div>
+    <div id="hudCenter" class="hud-panel">
+      <div class="hud-label">Deaths</div>
+      <div id="deathCount" class="hud-value death-value">0</div>
+    </div>
+    <div id="hudRight" class="hud-panel">
+      <div class="hud-label">Time</div>
+      <div id="timer" class="hud-value">0:00</div>
+    </div>
+  </div>
+
+  <!-- Stage Intro Overlay -->
+  <div id="stageIntroOverlay" class="overlay hidden">
+    <div class="stage-intro-content">
+      <div id="introStageNum" class="intro-stage-num">STAGE 1</div>
+      <h1 id="introStageName" class="intro-stage-name">Tutorial Plains</h1>
+      <p id="introStageSubtitle" class="intro-stage-subtitle">Learn the basics</p>
+    </div>
+  </div>
+
+  <!-- Stage Complete Overlay -->
+  <div id="stageCompleteOverlay" class="overlay hidden">
+    <div class="overlay-card">
+      <div class="overlay-icon">✦</div>
+      <h2 class="overlay-title">STAGE COMPLETE</h2>
+      <h3 id="completeStageName" class="overlay-subtitle">Tutorial Plains</h3>
+      <div class="overlay-stats">
+        <div class="stat">
+          <span class="stat-label">Time</span>
+          <span id="completeTime" class="stat-value">0:00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Deaths</span>
+          <span id="completeDeaths" class="stat-value">0</span>
+        </div>
+      </div>
+      <p class="overlay-prompt blink" id="completePrompt">Press ENTER / Tap for next stage</p>
+    </div>
+  </div>
+
+  <!-- Game Complete Overlay -->
+  <div id="gameCompleteOverlay" class="overlay hidden">
+    <div class="overlay-card game-complete-card">
+      <div class="overlay-icon trophy">🏆</div>
+      <h2 class="overlay-title rainbow">CONGRATULATIONS!</h2>
+      <p class="overlay-subtitle">You completed all stages!</p>
+      <div class="overlay-stats">
+        <div class="stat">
+          <span class="stat-label">Total Time</span>
+          <span id="totalTime" class="stat-value">0:00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Total Deaths</span>
+          <span id="totalDeaths" class="stat-value">0</span>
+        </div>
+      </div>
+      <p class="overlay-prompt blink">Press R / Tap to Play Again</p>
+    </div>
+  </div>
+
+  <script src="stages.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
