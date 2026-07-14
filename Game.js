@@ -976,7 +976,17 @@
       }
     }
 
-    netApplySyncFrame(data) {
+        netApplySyncFrame(data) {
+      // Hide intro overlay when host says we're playing
+      if (data.state === STATE.PLAYING && this.state === STATE.INTRO) {
+        document.getElementById('stageIntroOverlay').classList.remove('visible');
+        document.getElementById('stageIntroOverlay').classList.add('hidden');
+        if (IS_MOBILE) {
+          const tctrl = document.getElementById('touchControls');
+          if (tctrl) tctrl.style.display = 'flex';
+        }
+      }
+
       // Client-side interpolation: lerp toward target instead of snapping
       const LERP_SPEED = 0.45; // fast but smooth
 
@@ -1420,10 +1430,7 @@
         });
       }
     }
-
     _updateIntro() {
-      // If we are in online mode and we are the client, the host will sync us to STATE.PLAYING.
-      // But we can also let either player tap to skip.
       this.introTimer--;
       
       const skipIntro = this.introTimer <= 0 || keys['Enter'] || keys['Space'] || keys['__TAP__'];
@@ -1431,7 +1438,13 @@
         keys['__TAP__'] = false;
         document.getElementById('stageIntroOverlay').classList.remove('visible');
         document.getElementById('stageIntroOverlay').classList.add('hidden');
-        this.state = STATE.PLAYING;
+        
+        // Only host or local games change state directly
+        // Online client waits for host to sync the PLAYING state
+        if (this.coopType !== 'online' || this.net.isHost) {
+          this.state = STATE.PLAYING;
+        }
+        // If online client, stay in INTRO until host sends sync with state=PLAYING
       }
       
       // camera idle at spawn
@@ -1448,24 +1461,23 @@
     }
 
     _updatePlay() {
-          // ---- ONLINE CLIENT: prediction + interpolation (ZERO LAG) ----
+      // ---- ONLINE CLIENT: send inputs to host, don't run physics ----
       if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-        this.net.updateInterpolation();
+        // Throttle input sends to every 3rd tick to reduce bandwidth
         this._inputSendTick++;
-        if (this._inputSendTick >= 2) {
+        if (this._inputSendTick >= 3) {
           this._inputSendTick = 0;
+          // Send all local inputs — host will apply them to P2
           this.net.sendState({
             type: 'input',
-            keys: { ArrowLeft: !!keys['ArrowLeft'], ArrowRight: !!keys['ArrowRight'], ArrowUp: !!keys['ArrowUp'] },
-            seq: ++this.net.prediction.sequenceNumber
+            keys: {
+              ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
+              ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
+              ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
+            }
           });
         }
-        const p2Input = { 'ArrowLeft': !!keys['ArrowLeft'], 'ArrowRight': !!keys['ArrowRight'], 'ArrowUp': !!keys['ArrowUp'] };
-        this.p2.update(this.plats, 0, 0, null, this.ptcl, this.snd, this.wb, p2Input);
-        const mx = (this.net.interp.renderX + CONFIG.PLAYER_W/2 + this.p2.cx) / 2;
-        const my = (this.net.interp.renderY + CONFIG.PLAYER_H/2 + this.p2.cy) / 2;
-        this.cam.follow(mx, my, this.wb);
-        this.ptcl.update();
+        // Client rendering is driven by netApplySyncFrame — no local physics
         return;
       }
 
@@ -2287,15 +2299,8 @@
         this.chain.draw(ctx, this.tick, this.chainHeat);
       }
 
-           if (this.state !== STATE.DYING || this.deathCD > CONFIG.DEATH_COOLDOWN * 0.5) {
-        if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-          const ox = this.p1.x, oy = this.p1.y;
-          this.p1.x = this.net.interp.renderX; this.p1.y = this.net.interp.renderY;
-          this.p1.draw(ctx, this.tick);
-          this.p1.x = ox; this.p1.y = oy;
-        } else {
-          this.p1.draw(ctx, this.tick);
-        }
+      if (this.state !== STATE.DYING || this.deathCD > CONFIG.DEATH_COOLDOWN * 0.5) {
+        this.p1.draw(ctx, this.tick);
         if (this.gameMode === 'multi') this.p2.draw(ctx, this.tick);
       }
 
