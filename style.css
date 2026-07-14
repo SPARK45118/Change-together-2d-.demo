@@ -366,12 +366,20 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  padding: 0 12px 14px;
-  padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  padding: 0 24px 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   pointer-events: none; /* container is pass-through; buttons catch events */
 }
 
-.tc-player {
+/* Left/Right structural panels */
+.tc-side-left, .tc-side-right {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  pointer-events: none;
+}
+
+.tc-player-move, .tc-player-jump {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -379,40 +387,38 @@ html, body {
   pointer-events: none;
 }
 
-.tc-label {
+.tc-player-label {
   font-family: 'Orbitron', sans-serif;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 2px;
-  color: rgba(255, 255, 255, 0.45);
   text-transform: uppercase;
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* P1 uses cyan accent, P2 uses pink */
-#tcP1 .tc-label { color: rgba(0, 229, 255, 0.7); }
-#tcP2 .tc-label { color: rgba(255, 0, 85, 0.7);  }
+#tcP1Move .tc-player-label, #tcP1Jump .tc-player-label { color: rgba(0, 229, 255, 0.7); }
+#tcP2Move .tc-player-label, #tcP2Jump .tc-player-label { color: rgba(255, 0, 85, 0.7);  }
 
 .tc-row {
   display: flex;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
   pointer-events: none;
 }
 
-/* Base button */
+/* Base button styling */
 .tc-btn {
   pointer-events: all;
-  width: 58px;
-  height: 58px;
-  border-radius: 14px;
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
   border: 2px solid rgba(255, 255, 255, 0.15);
-  background: rgba(10, 10, 40, 0.72);
+  background: rgba(10, 10, 40, 0.75);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   color: rgba(255, 255, 255, 0.85);
-  font-size: 22px;
+  font-size: 24px;
   line-height: 1;
   display: flex;
   align-items: center;
@@ -428,46 +434,35 @@ html, body {
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-/* Jump button is taller and accent-coloured */
+/* Jump button is circular, slightly larger */
 .tc-btn.tc-jump {
-  width: 64px;
-  height: 64px;
+  width: 68px;
+  height: 68px;
   border-radius: 50%;
-  font-size: 20px;
+  font-size: 22px;
 }
 
-/* P1 accent */
-#tcP1 .tc-btn {
+/* Color themed borders and shadows */
+#tcP1Move .tc-btn {
   border-color: rgba(0, 229, 255, 0.35);
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    0 0 8px rgba(0, 229, 255, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 0 8px rgba(0, 229, 255, 0.12);
 }
-#tcP1 .tc-btn.tc-jump {
-  background: rgba(0, 40, 60, 0.82);
+#tcP1Jump .tc-btn.tc-jump {
+  background: rgba(0, 40, 60, 0.85);
   border-color: rgba(0, 229, 255, 0.6);
   color: #00e5ff;
-  box-shadow:
-    0 4px 20px rgba(0, 229, 255, 0.25),
-    inset 0 1px 0 rgba(0, 229, 255, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.25);
 }
 
-/* P2 accent */
-#tcP2 .tc-btn {
+#tcP2Move .tc-btn {
   border-color: rgba(255, 0, 85, 0.35);
-  box-shadow:
-    0 4px 16px rgba(0, 0, 0, 0.5),
-    0 0 8px rgba(255, 0, 85, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5), 0 0 8px rgba(255, 0, 85, 0.12);
 }
-#tcP2 .tc-btn.tc-jump {
-  background: rgba(50, 0, 25, 0.82);
+#tcP2Jump .tc-btn.tc-jump {
+  background: rgba(50, 0, 25, 0.85);
   border-color: rgba(255, 0, 85, 0.6);
   color: #ff0055;
-  box-shadow:
-    0 4px 20px rgba(255, 0, 85, 0.25),
-    inset 0 1px 0 rgba(255, 0, 85, 0.1);
+  box-shadow: 0 4px 20px rgba(255, 0, 85, 0.25);
 }
 
 /* Pressed state */
@@ -478,31 +473,31 @@ html, body {
   border-color: rgba(255, 255, 255, 0.5);
 }
 
-#tcP1 .tc-btn.tc-jump:active {
-  background: rgba(0, 229, 255, 0.25);
+#tcP1Jump .tc-btn.tc-jump:active {
+  background: rgba(0, 229, 255, 0.3);
   border-color: #00e5ff;
-  box-shadow: 0 0 24px rgba(0, 229, 255, 0.5);
+  box-shadow: 0 0 24px rgba(0, 229, 255, 0.6);
 }
-#tcP2 .tc-btn.tc-jump:active {
-  background: rgba(255, 0, 85, 0.25);
+#tcP2Jump .tc-btn.tc-jump:active {
+  background: rgba(255, 0, 85, 0.3);
   border-color: #ff0055;
-  box-shadow: 0 0 24px rgba(255, 0, 85, 0.5);
+  box-shadow: 0 0 24px rgba(255, 0, 85, 0.6);
 }
 
-/* On very small phones tighten everything up */
-@media (max-width: 400px) {
-  .tc-btn { width: 50px; height: 50px; font-size: 18px; border-radius: 12px; }
-  .tc-btn.tc-jump { width: 56px; height: 56px; font-size: 16px; }
-  .tc-row { gap: 6px; }
-  #touchControls { padding: 0 8px 10px; }
+/* On very small screens scale down controls */
+@media (max-width: 600px) {
+  .tc-btn { width: 52px; height: 52px; font-size: 20px; border-radius: 12px; }
+  .tc-btn.tc-jump { width: 58px; height: 58px; font-size: 18px; }
+  .tc-row { gap: 8px; }
+  .tc-side-left, .tc-side-right { gap: 14px; }
+  #touchControls { padding: 0 16px 12px; }
 }
 
-/* ============================================================
-   SINGLE-PLAYER PAD: center the lone D-pad
-   ============================================================ */
+/* Solo Mode centering helper (though spacing is left/right by default) */
 #touchControls.tc-solo {
-  justify-content: center;
+  justify-content: space-between;
 }
+
 
 /* ============================================================
    LANDSCAPE / FULLSCREEN

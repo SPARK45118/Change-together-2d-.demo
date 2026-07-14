@@ -861,26 +861,38 @@
       const multi = this.gameMode === 'multi';
       const ui = document.createElement('div');
       ui.id = 'touchControls';
-      // In single-player mode the P1 pad is centered; in multi both sides show.
       ui.className = multi ? '' : 'tc-solo';
+      
+      // Left side holds movement buttons; right side holds jump button(s)
       ui.innerHTML = `
-        <div class="tc-player" id="tcP1">
-          <div class="tc-label">P1</div>
-          <div class="tc-row">
-            <button class="tc-btn" id="tcP1L">&#9664;</button>
-            <button class="tc-btn tc-jump" id="tcP1J">&#9650;</button>
-            <button class="tc-btn" id="tcP1R">&#9654;</button>
+        <div class="tc-side-left">
+          <div class="tc-player-move" id="tcP1Move">
+            <span class="tc-player-label">P1</span>
+            <div class="tc-row">
+              <button class="tc-btn" id="tcP1L">&#9664;</button>
+              <button class="tc-btn" id="tcP1R">&#9654;</button>
+            </div>
           </div>
+          ${multi ? `
+          <div class="tc-player-move" id="tcP2Move">
+            <span class="tc-player-label">P2</span>
+            <div class="tc-row">
+              <button class="tc-btn" id="tcP2L">&#9664;</button>
+              <button class="tc-btn" id="tcP2R">&#9654;</button>
+            </div>
+          </div>` : ''}
         </div>
-        ${multi ? `
-        <div class="tc-player" id="tcP2">
-          <div class="tc-label">P2</div>
-          <div class="tc-row">
-            <button class="tc-btn" id="tcP2L">&#9664;</button>
-            <button class="tc-btn tc-jump" id="tcP2J">&#9650;</button>
-            <button class="tc-btn" id="tcP2R">&#9654;</button>
+        <div class="tc-side-right">
+          <div class="tc-player-jump" id="tcP1Jump">
+            <span class="tc-player-label">P1</span>
+            <button class="tc-btn tc-jump" id="tcP1J">&#9650;</button>
           </div>
-        </div>` : ''}
+          ${multi ? `
+          <div class="tc-player-jump" id="tcP2Jump">
+            <span class="tc-player-label">P2</span>
+            <button class="tc-btn tc-jump" id="tcP2J">&#9650;</button>
+          </div>` : ''}
+        </div>
       `;
       document.body.appendChild(ui);
 
@@ -936,6 +948,13 @@
       this.chainHeat = 0;
       this.ptcl.clear();
 
+      // Ensure touch UI is created and visible/hidden appropriately
+      if (IS_MOBILE) {
+        this._buildTouchUI();
+        const tctrl = document.getElementById('touchControls');
+        if (tctrl) tctrl.style.display = 'none'; // Keep hidden during stage intro
+      }
+
       // HUD
       const sn = document.getElementById('stageNum');
       const st = document.getElementById('stageTitle');
@@ -974,6 +993,10 @@
       });
       this.deathCD = 0;
       this.chainHeat = 0;
+      if (IS_MOBILE) {
+        const tctrl = document.getElementById('touchControls');
+        if (tctrl) tctrl.style.display = 'flex';
+      }
     }
 
     startFade(dir, cb) {
@@ -1016,6 +1039,18 @@
 
     _update() {
       this.ptcl.update();
+
+      // Show/Hide touch UI depending on whether we are in active play
+      if (IS_MOBILE) {
+        const tctrl = document.getElementById('touchControls');
+        if (tctrl) {
+          if (this.state === STATE.PLAYING) {
+            tctrl.style.display = 'flex';
+          } else {
+            tctrl.style.display = 'none';
+          }
+        }
+      }
 
       switch (this.state) {
         case STATE.MENU: this._updateMenu(); break;
@@ -1245,6 +1280,10 @@
         this.ptcl.emit(this.p2.cx, this.p2.cy, 20, COL.P2, { sMin: -5, sMax: 5, life: 40, sz: 4 });
       }
       document.getElementById('deathCount').textContent = this.deaths;
+      if (IS_MOBILE) {
+        const tctrl = document.getElementById('touchControls');
+        if (tctrl) tctrl.style.display = 'none';
+      }
     }
 
     _updateDying() {
