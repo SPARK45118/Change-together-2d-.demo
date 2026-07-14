@@ -847,6 +847,12 @@
 
       this.fade = 0; this.fadeDir = 0; this.fadeCB = null;
 
+      this._loop = this._loop.bind(this);
+      this._lastTime = 0;
+      this._accumulator = 0;
+      this._fixedStep = 1000 / 60; // 16.667ms per physics tick
+      requestAnimationFrame(this._loop);
+
       // Build touch UI after a short delay (DOM must be ready)
       if (IS_MOBILE) this._buildTouchUI();
       
