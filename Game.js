@@ -1412,12 +1412,16 @@
           this.state = this.gameMode === 'multi' ? STATE.COOP_TYPE_SELECT : STATE.MODE_SELECT;
         });
       }
+      
+      // --- CHANGED SECTION STARTS HERE ---
       if (consumeJustPressed('Enter') || consumeJustPressed('Space') || consumeJustPressed('__TAP__')) {
         this.startFade(1, () => {
           document.getElementById('hud').classList.remove('hidden');
           this.loadStage(this.selectedStageIdx);
+          
           // If in WebRTC online mode and we are the host, notify the guest client
           if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+            // Send launch message repeatedly in case the client missed the first one (increased delay to 150ms)
             let attempts = 0;
             const interval = setInterval(() => {
               if (this.net.conn && this.net.conn.open) {
@@ -1425,10 +1429,11 @@
               }
               attempts++;
               if (attempts >= 4) clearInterval(interval);
-            }, 100);
+            }, 150);
           }
         });
       }
+      // --- CHANGED SECTION ENDS HERE ---
     }
     _updateIntro() {
       this.introTimer--;

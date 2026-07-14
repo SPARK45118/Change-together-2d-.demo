@@ -109,7 +109,6 @@ class NetSync {
         console.log('[NetSync] Connecting to host:', targetHostId);
 
         // Use reliable: false (unreliable/UDP mode) for minimum latency and real-time responsiveness.
-        // To handle packet loss for initial critical setup states (like launch/joined), we will send connection setup messages reliably.
         const conn = this.peer.connect(targetHostId, {
           reliable: false
         });
@@ -162,7 +161,7 @@ class NetSync {
       document.getElementById('connectingOverlay').classList.add('hidden');
 
       if (this.isHost) {
-        // Send 'joined' multiple times with a small delay to guarantee client receives it and doesn't get stuck in lobby
+        // Send 'joined' multiple times with a small delay to guarantee client receives it
         let attempts = 0;
         const interval = setInterval(() => {
           if (this.conn && this.conn.open) {
@@ -272,7 +271,10 @@ class NetSync {
     if (s === STATE.PLAYING || s === STATE.INTRO || s === STATE.STAGE_COMPLETE ||
         s === STATE.WAITING_HOST || s === STATE.STAGE_SELECT) {
       this.game.state = STATE.MENU;
-      alert('Disconnected from peer.');
+      // Only alert if they actually were connected
+      if (this.game.gameMode === 'multi' && this.game.coopType === 'online') {
+        alert('Disconnected from peer.');
+      }
     }
   }
 }
