@@ -1387,14 +1387,27 @@
       ctx.fillText('SELECT MISSION', cx, 65);
       ctx.restore();
 
-      const cardW = 160;
-      const cardH = 210;
-      const gapX = 22;
-      const gapY = 18;
-      const cols = 5;
+      // Card layout optimization
+      let cols = 5;
+      let cardW = 140;
+      let cardH = 180;
+      let gapX = 16;
+      let gapY = 14;
+
+      // Adapt grid sizes dynamically for mobile screen widths
+      if (canvas.width < 800) {
+        cardW = 100;
+        cardH = 135;
+        gapX = 10;
+        gapY = 10;
+      }
+      
       const totalW = cols * cardW + (cols - 1) * gapX;
       const startX = (canvas.width - totalW) / 2;
       const cardY = (canvas.height - (2 * cardH + gapY)) / 2 + 10;
+
+      // Keep layout definitions on the instance so the touch controller can locate card boundaries
+      this._stageLayout = { startX, cardY, cardW, cardH, gapX, gapY, cols };
 
       const stageColors = [
         '#00e5ff', '#bd00ff', '#00ffc8', '#ff3300', '#ffd700',
@@ -1406,10 +1419,10 @@
         const isSelected = this.selectedStageIdx === i;
         const col = stageColors[i % stageColors.length];
 
-        const row = Math.floor(i / 5);
-        const colIdx = i % 5;
+        const row = Math.floor(i / cols);
+        const colIdx = i % cols;
         const x = startX + colIdx * (cardW + gapX);
-        const bob = isSelected ? Math.sin(this.tick * 0.12) * 5 : 0;
+        const bob = isSelected ? Math.sin(this.tick * 0.12) * 4 : 0;
         const cy = cardY + row * (cardH + gapY) + bob;
 
         ctx.save();
@@ -1432,95 +1445,101 @@
         ctx.shadowBlur = 0;
 
         ctx.fillStyle = isSelected ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)';
-        ctx.font = 'bold 54px Orbitron, sans-serif';
+        ctx.font = `bold ${cardW > 110 ? '54px' : '38px'} Orbitron, sans-serif`;
         ctx.textAlign = 'right';
-        ctx.fillText((i + 1).toString().padStart(2, '0'), x + cardW - 10, cy + 55);
+        ctx.fillText((i + 1).toString().padStart(2, '0'), x + cardW - 10, cy + (cardW > 110 ? 55 : 40));
 
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 13px Orbitron, sans-serif';
+        ctx.font = `bold ${cardW > 110 ? '13px' : '10px'} Orbitron, sans-serif`;
         ctx.textAlign = 'left';
-        ctx.fillText(s.name.toUpperCase(), x + 12, cy + 85);
+        ctx.fillText(s.name.toUpperCase(), x + 10, cy + (cardW > 110 ? 85 : 65));
 
         ctx.fillStyle = '#8888aa';
-        ctx.font = '10px Rajdhani, sans-serif';
-        ctx.fillText(s.sub, x + 12, cy + 102);
+        ctx.font = `${cardW > 110 ? '10px' : '8px'} Rajdhani, sans-serif`;
+        ctx.fillText(s.sub, x + 10, cy + (cardW > 110 ? 102 : 80));
 
         ctx.strokeStyle = isSelected ? col + '66' : '#332255';
         ctx.lineWidth = 1;
-        ctx.strokeRect(x + 12, cy + 115, cardW - 24, 40);
+        ctx.strokeRect(x + 10, cy + (cardW > 110 ? 115 : 90), cardW - 20, cardW > 110 ? 40 : 25);
 
         ctx.fillStyle = isSelected ? col + '22' : '#22153c';
+        const lineY = cy + (cardW > 110 ? 0 : -20);
         if (i === 0) {
-          ctx.fillRect(x + 18, cy + 140, 30, 6);
-          ctx.fillRect(x + 60, cy + 130, 20, 6);
-          ctx.fillRect(x + 100, cy + 140, 30, 6);
+          ctx.fillRect(x + 18, lineY + 140, 30, 6);
+          ctx.fillRect(x + 60, lineY + 130, 20, 6);
+          ctx.fillRect(x + 100, lineY + 140, 30, 6);
         } else if (i === 1) {
-          ctx.fillRect(x + 18, cy + 140, 35, 6);
-          ctx.fillRect(x + 95, cy + 140, 35, 6);
+          ctx.fillRect(x + 18, lineY + 140, 35, 6);
+          ctx.fillRect(x + 95, lineY + 140, 35, 6);
         } else if (i === 2) {
-          ctx.fillRect(x + 35, cy + 142, 20, 3);
-          ctx.fillRect(x + 75, cy + 132, 20, 3);
-          ctx.fillRect(x + 45, cy + 122, 20, 3);
+          ctx.fillRect(x + 35, lineY + 142, 20, 3);
+          ctx.fillRect(x + 75, lineY + 132, 20, 3);
+          ctx.fillRect(x + 45, lineY + 122, 20, 3);
         } else if (i === 3) {
-          ctx.fillRect(x + 18, cy + 140, 25, 6);
-          ctx.fillRect(x + 60, cy + 140, 25, 6);
-          ctx.fillRect(x + 105, cy + 140, 25, 6);
+          ctx.fillRect(x + 18, lineY + 140, 25, 6);
+          ctx.fillRect(x + 60, lineY + 140, 25, 6);
+          ctx.fillRect(x + 105, lineY + 140, 25, 6);
           ctx.fillStyle = '#ff3300';
-          ctx.fillRect(x + 46, cy + 146, 12, 3);
+          ctx.fillRect(x + 46, lineY + 146, 12, 3);
         } else if (i === 4) {
-          ctx.fillRect(x + 18, cy + 142, 30, 4);
-          ctx.fillRect(x + 85, cy + 125, 30, 4);
-          ctx.fillRect(x + 55, cy + 117, 35, 4);
+          ctx.fillRect(x + 18, lineY + 142, 30, 4);
+          ctx.fillRect(x + 85, lineY + 125, 30, 4);
+          ctx.fillRect(x + 55, lineY + 117, 35, 4);
         } else if (i === 5) {
           ctx.fillStyle = '#33aa55';
-          ctx.fillRect(x + 18, cy + 140, 40, 6);
-          ctx.fillRect(x + 85, cy + 140, 40, 6);
+          ctx.fillRect(x + 18, lineY + 140, 40, 6);
+          ctx.fillRect(x + 85, lineY + 140, 40, 6);
         } else if (i === 6) {
           ctx.fillStyle = '#9e6d42';
-          ctx.fillRect(x + 18, cy + 142, 20, 6);
-          ctx.fillRect(x + 50, cy + 134, 20, 6);
-          ctx.fillRect(x + 80, cy + 126, 20, 6);
+          ctx.fillRect(x + 18, lineY + 142, 20, 6);
+          ctx.fillRect(x + 50, lineY + 134, 20, 6);
+          ctx.fillRect(x + 80, lineY + 126, 20, 6);
         } else if (i === 7) {
           ctx.fillStyle = '#ff00aa';
-          ctx.fillRect(x + 18, cy + 136, 15, 4);
-          ctx.fillRect(x + 60, cy + 130, 15, 4);
-          ctx.fillRect(x + 100, cy + 138, 20, 4);
+          ctx.fillRect(x + 18, lineY + 136, 15, 4);
+          ctx.fillRect(x + 60, lineY + 130, 15, 4);
+          ctx.fillRect(x + 100, lineY + 138, 20, 4);
         } else if (i === 8) {
           ctx.fillStyle = '#00e5ff';
-          ctx.fillRect(x + 18, cy + 140, 25, 6);
-          ctx.fillRect(x + 105, cy + 140, 25, 6);
-          ctx.fillRect(x + 55, cy + 125, 40, 4);
+          ctx.fillRect(x + 18, lineY + 140, 25, 6);
+          ctx.fillRect(x + 105, lineY + 140, 25, 6);
+          ctx.fillRect(x + 55, lineY + 125, 40, 4);
         } else {
           ctx.fillStyle = '#bd00ff';
-          ctx.fillRect(x + 18, cy + 144, 25, 4);
-          ctx.fillRect(x + 105, cy + 144, 25, 4);
-          ctx.fillRect(x + 60, cy + 130, 30, 4);
+          ctx.fillRect(x + 18, lineY + 144, 25, 4);
+          ctx.fillRect(x + 105, lineY + 144, 25, 4);
+          ctx.fillRect(x + 60, lineY + 130, 30, 4);
         }
 
-        let badgeY = cy + 168;
+        let badgeY = cy + (cardW > 110 ? 168 : 120);
+        const badgeW = cardW > 110 ? 62 : 40;
+        const badgeH = cardW > 110 ? 14 : 10;
+        const fontSize = cardW > 110 ? '8px' : '6px';
+        const fontOffset = cardW > 110 ? 10 : 8;
+
         if (s.drones && s.drones.length > 0) {
           ctx.fillStyle = 'rgba(255,0,50,0.15)';
           ctx.strokeStyle = '#ff0033';
           ctx.lineWidth = 1;
-          roundRect(ctx, x + 12, badgeY, 62, 14, 3);
+          roundRect(ctx, x + 8, badgeY, badgeW, badgeH, 3);
           ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ff3366';
-          ctx.font = 'bold 8px Orbitron, sans-serif';
+          ctx.font = `bold ${fontSize} Orbitron, sans-serif`;
           ctx.textAlign = 'center';
-          ctx.fillText('DRONES', x + 12 + 31, badgeY + 10);
+          ctx.fillText('DRONES', x + 8 + badgeW / 2, badgeY + fontOffset);
         }
 
         if (s.hazards && s.hazards.length > 0) {
-          const hOffset = (s.drones && s.drones.length > 0) ? 82 : 12;
+          const hOffset = (s.drones && s.drones.length > 0) ? (8 + badgeW + (cardW > 110 ? 8 : 4)) : 8;
           ctx.fillStyle = 'rgba(255,80,0,0.15)';
           ctx.strokeStyle = '#ff5500';
           ctx.lineWidth = 1;
-          roundRect(ctx, x + hOffset, badgeY, 62, 14, 3);
+          roundRect(ctx, x + hOffset, badgeY, badgeW, badgeH, 3);
           ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ff6600';
-          ctx.font = 'bold 8px Orbitron, sans-serif';
+          ctx.font = `bold ${fontSize} Orbitron, sans-serif`;
           ctx.textAlign = 'center';
-          ctx.fillText('HAZARDS', x + hOffset + 31, badgeY + 10);
+          ctx.fillText('HAZARDS', x + hOffset + badgeW / 2, badgeY + fontOffset);
         }
 
         ctx.restore();
@@ -2001,7 +2020,7 @@
   window.addEventListener('load', () => {
     const game = new Game();
 
-    // --- Canvas tap: works as Enter for menus, inits audio, and handles mode-select ---
+    // --- Canvas tap: works as Enter for menus, inits audio, and handles mode/stage select ---
     canvas.addEventListener('touchstart', (e) => {
       game.snd.init();
       // Attempt fullscreen + landscape on first tap
@@ -2009,15 +2028,47 @@
       lockLandscape();
 
       const s = game.state;
+      const touch = e.touches[0];
+      
+      // Calculate coordinates relative to canvas bounding client rect
+      const rect = canvas.getBoundingClientRect();
+      const touchX = ((touch.clientX - rect.left) / rect.width) * canvas.width;
+      const touchY = ((touch.clientY - rect.top) / rect.height) * canvas.height;
 
-      // Mode select: tap left half = solo, right half = coop, then auto-confirm
+      // Mode select tap handling
       if (s === STATE.MODE_SELECT) {
-        const touch = e.touches[0];
-        game.selectedMode = touch.clientX < canvas.width / 2 ? 0 : 1;
+        game.selectedMode = touch.clientX < window.innerWidth / 2 ? 0 : 1;
         justPressed['__TAP__'] = true;
         keys['__TAP__'] = true;
         setTimeout(() => { keys['__TAP__'] = false; }, 100);
         return;
+      }
+
+      // Stage select tap handling
+      if (s === STATE.STAGE_SELECT && game._stageLayout) {
+        const lay = game._stageLayout;
+        // Search which card bounds match our touch coordinates
+        for (let idx = 0; idx < STAGES.length; idx++) {
+          const row = Math.floor(idx / lay.cols);
+          const colIdx = idx % lay.cols;
+          const cx = lay.startX + colIdx * (lay.cardW + lay.gapX);
+          const cy = lay.cardY + row * (lay.cardH + lay.gapY);
+
+          if (touchX >= cx && touchX <= cx + lay.cardW &&
+              touchY >= cy && touchY <= cy + lay.cardH) {
+            
+            // If already selected, double tap confirms and launches
+            if (game.selectedStageIdx === idx) {
+              justPressed['__TAP__'] = true;
+              keys['__TAP__'] = true;
+              setTimeout(() => { keys['__TAP__'] = false; }, 100);
+            } else {
+              game.selectedStageIdx = idx;
+              game.snd.land();
+            }
+            return;
+          }
+        }
       }
 
       if (s === STATE.MENU || s === STATE.STAGE_SELECT ||
