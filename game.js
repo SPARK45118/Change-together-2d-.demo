@@ -2020,6 +2020,38 @@
   window.addEventListener('load', () => {
     const game = new Game();
 
+    // --- Helper to register a screen tap input ---
+    function triggerTap() {
+      justPressed['__TAP__'] = true;
+      keys['__TAP__'] = true;
+      setTimeout(() => { keys['__TAP__'] = false; }, 100);
+    }
+
+    // --- Wire up DOM overlays directly so touches on them are not blocked/lost ---
+    const overlays = [
+      document.getElementById('stageIntroOverlay'),
+      document.getElementById('stageCompleteOverlay'),
+      document.getElementById('gameCompleteOverlay')
+    ];
+
+    overlays.forEach(overlay => {
+      if (overlay) {
+        overlay.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          game.snd.init();
+          
+          if (game.state === STATE.GAME_OVER) {
+            overlay.classList.remove('visible');
+            overlay.classList.add('hidden');
+            game.totDeaths = 0; game.totTime = 0;
+            game.startFade(1, () => { game.loadStage(0); });
+          } else {
+            triggerTap();
+          }
+        }, { passive: false });
+      }
+    });
+
     // --- Canvas tap: works as Enter for menus, inits audio, and handles mode/stage select ---
     canvas.addEventListener('touchstart', (e) => {
       game.snd.init();
@@ -2038,9 +2070,7 @@
       // Mode select tap handling
       if (s === STATE.MODE_SELECT) {
         game.selectedMode = touch.clientX < window.innerWidth / 2 ? 0 : 1;
-        justPressed['__TAP__'] = true;
-        keys['__TAP__'] = true;
-        setTimeout(() => { keys['__TAP__'] = false; }, 100);
+        triggerTap();
         return;
       }
 
@@ -2059,9 +2089,7 @@
             
             // If already selected, double tap confirms and launches
             if (game.selectedStageIdx === idx) {
-              justPressed['__TAP__'] = true;
-              keys['__TAP__'] = true;
-              setTimeout(() => { keys['__TAP__'] = false; }, 100);
+              triggerTap();
             } else {
               game.selectedStageIdx = idx;
               game.snd.land();
@@ -2073,9 +2101,7 @@
 
       if (s === STATE.MENU || s === STATE.STAGE_SELECT ||
           s === STATE.STAGE_COMPLETE || s === STATE.INTRO) {
-        justPressed['__TAP__'] = true;
-        keys['__TAP__'] = true;
-        setTimeout(() => { keys['__TAP__'] = false; }, 100);
+        triggerTap();
       }
       // Game-over: tap restarts
       if (s === STATE.GAME_OVER) {
