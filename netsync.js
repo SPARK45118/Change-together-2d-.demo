@@ -1,6 +1,6 @@
 // ============================================================
 // CHAINED TOGETHER — Peer-to-Peer Network Sync Layer
-// Simple WebRTC + public signaling connector
+// Optimized WebRTC + public signaling connector
 // ============================================================
 
 class NetSync {
@@ -11,15 +11,22 @@ class NetSync {
     this.isHost = false;
     this.roomCode = '';
     this.connected = false;
-    
-    // We use a free public signaling relay (or PeerJS public server)
+
+    // Throttle: only send sync data every N ticks (reduces bandwidth ~66%)
+    this.SYNC_INTERVAL = 3;
+    this._syncTick = 0;
+
+    // Client-side interpolation targets
+    this._lerpTargets = null; // { p1, p2, cam } set by incoming sync frames
+    this._lerpAlpha = 0;
+
     this.peerjsScriptLoaded = false;
   }
 
   // Load PeerJS library dynamically to avoid offline start issues
   async init() {
     if (this.peerjsScriptLoaded) return Promise.resolve();
-    
+
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
@@ -34,7 +41,7 @@ class NetSync {
 
   // Generate a random room code (6 alphanumeric characters)
   _generateCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Avoid ambiguous chars like O, 0, I, 1
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
     for (let i = 0; i < 6; i++) {
       code += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -47,10 +54,10 @@ class NetSync {
     await this.init();
     this.isHost = true;
     this.roomCode = this._generateCode();
-    
+
     const hostId = 'chained-together-' + this.roomCode;
     this.peer = new Peer(hostId, {
-      debug: 1,
+      debug: 0,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -61,15 +68,16 @@ class NetSync {
 
     return new Promise((resolve, reject) => {
       this.peer.on('open', (id) => {
-        console.log('Room hosted with Peer ID:', id);
+        console.log('[NetSync] Room hosted:', id);
         this._setupHostListeners();
         resolve(this.roomCode);
       });
 
       this.peer.on('error', (err) => {
-        console.error('Peer error:', err);
+        console.error('[NetSync] Peer error:', err);
         if (err.type === 'unavailable-id') {
-          // Retry generating a code if ID conflicts
+          this.roomCode = this._generateCode();
+          this.peer.destroy();
           this.hostRoom().then(resolve).catch(reject);
         } else {
           reject(err);
@@ -83,9 +91,9 @@ class NetSync {
     await this.init();
     this.isHost = false;
     this.roomCode = code.toUpperCase().trim();
-    
+
     this.peer = new Peer({
-      debug: 1,
+      debug: 0,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -98,16 +106,16 @@ class NetSync {
 
     return new Promise((resolve, reject) => {
       this.peer.on('open', () => {
-        console.log('Connecting to host room:', targetHostId);
-        
-        // Connect to host
+        console.log('[NetSync] Connecting to host:', targetHostId);
+
+        // Use reliable: true — short JSON payloads don't benefit from
+        // unreliable (UDP) transport, and dropped packets cause visual jitter.
         const conn = this.peer.connect(targetHostId, {
-          reliable: false // WebRTC UDP mode for rapid updates
+          reliable: true
         });
-        
+
         this._setupConnection(conn);
 
-        // Timeout if no response
         const timeout = setTimeout(() => {
           if (!this.connected) {
             this.disconnect();
@@ -135,7 +143,6 @@ class NetSync {
   _setupHostListeners() {
     this.peer.on('connection', (conn) => {
       if (this.connected) {
-        // Only 1 player can join our room
         conn.close();
         return;
       }
@@ -145,18 +152,23 @@ class NetSync {
 
   _setupConnection(conn) {
     this.conn = conn;
-    
+
     conn.on('open', () => {
       this.connected = true;
-      console.log('Data connection established!');
-      
-      // Update overlays
+      console.log('[NetSync] Data channel open!');
+
+      // Hide lobby overlays
       document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
       document.getElementById('connectingOverlay').classList.add('hidden');
-      
-      // If we are host, we start loading the stages
+
       if (this.isHost) {
+        // Tell the client that they are connected and should wait
+        this.sendState({ type: 'joined', role: 'client' });
+        // Host goes to stage select
         this.game.netLaunchGame();
+      } else {
+        // Client enters waiting state
+        this.game.netEnterWaiting();
       }
     });
 
@@ -165,68 +177,92 @@ class NetSync {
     });
 
     conn.on('close', () => {
-      console.log('Connection closed by peer.');
+      console.log('[NetSync] Connection closed by peer.');
       this.disconnect();
     });
 
     conn.on('error', (err) => {
-      console.error('Connection error:', err);
+      console.error('[NetSync] Connection error:', err);
       this.disconnect();
     });
   }
 
-  // Send tick/input state to peer
+  // Send data to peer
   sendState(payload) {
     if (this.conn && this.conn.open) {
       this.conn.send(payload);
     }
   }
 
+  // Called by the game loop every tick — throttles actual sends
+  trySendSync(payload) {
+    this._syncTick++;
+    if (this._syncTick >= this.SYNC_INTERVAL) {
+      this._syncTick = 0;
+      this.sendState(payload);
+    }
+  }
+
   _handleNetworkData(data) {
-    if (!data) return;
+    if (!data || !data.type) return;
 
-    // Type 1: Sync Level Launch / Stage Selection
-    if (data.type === 'launch') {
-      this.game.netLaunchStage(data.stageIdx);
-      return;
-    }
+    switch (data.type) {
+      case 'joined':
+        // Client received confirmation from host
+        this.game.netEnterWaiting();
+        break;
 
-    // Type 2: Game Sync Frame
-    if (data.type === 'sync') {
-      if (this.isHost) {
-        // Host controls physics, so client only sends its direct movement inputs
-        // Client reports keys back to host so host's player update handles it locally
-        this.game.netSetClientKeys(data.keys);
-      } else {
-        // Client receives fully-computed state from the host
-        this.game.netApplySyncFrame(data);
-      }
-      return;
-    }
+      case 'launch':
+        // Host selected a stage — client loads it
+        this.game.netLaunchStage(data.stageIdx);
+        break;
 
-    // Type 3: Stage Completed (Proceed together)
-    if (data.type === 'complete_confirm') {
-      this.game.netConfirmStageWin();
+      case 'input':
+        // Host receives client's P2 inputs
+        if (this.isHost) {
+          this.game.netSetClientKeys(data.keys);
+        }
+        break;
+
+      case 'sync':
+        // Client receives authoritative game state from host
+        if (!this.isHost) {
+          this.game.netApplySyncFrame(data);
+        }
+        break;
+
+      case 'death':
+        // Host tells client a death occurred
+        if (!this.isHost) {
+          this.game.netApplyDeath(data);
+        }
+        break;
+
+      case 'complete_confirm':
+        this.game.netConfirmStageWin();
+        break;
     }
   }
 
   disconnect() {
     this.connected = false;
     if (this.conn) {
-      this.conn.close();
+      try { this.conn.close(); } catch (e) { /* ignore */ }
       this.conn = null;
     }
     if (this.peer) {
-      this.peer.destroy();
+      try { this.peer.destroy(); } catch (e) { /* ignore */ }
       this.peer = null;
     }
-    
-    // Hide game, return to title screen on disconnect
+
+    // Hide overlays, return to title
     document.getElementById('connectingOverlay').classList.add('hidden');
     document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
     document.getElementById('hud').classList.add('hidden');
-    
-    if (this.game.state === STATE.PLAYING || this.game.state === STATE.INTRO || this.game.state === STATE.STAGE_COMPLETE) {
+
+    const s = this.game.state;
+    if (s === STATE.PLAYING || s === STATE.INTRO || s === STATE.STAGE_COMPLETE ||
+        s === STATE.WAITING_HOST || s === STATE.STAGE_SELECT) {
       this.game.state = STATE.MENU;
       alert('Disconnected from peer.');
     }

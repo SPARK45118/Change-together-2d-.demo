@@ -58,7 +58,7 @@
     EXIT: '#00ff66',
   };
 
-  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6, MODE_SELECT: 7, COOP_TYPE_SELECT: 8 };
+  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6, MODE_SELECT: 7, COOP_TYPE_SELECT: 8, WAITING_HOST: 9 };
 
   // ============================================================
   // UTILITIES
@@ -407,11 +407,12 @@
       this.gnd = false; this.wasGnd = false; this.inv = CONFIG.INVINCIBILITY; this.atExit = false;
     }
 
-    update(platforms, fx, fy, clampPos, particles, sound, wb) {
+    update(platforms, fx, fy, clampPos, particles, sound, wb, inputSource) {
       this.wasGnd = this.gnd;
+      const inp = inputSource || keys;
       let mx = 0;
-      if (keys[this.kL]) mx = -1;
-      if (keys[this.kR]) mx = 1;
+      if (inp[this.kL]) mx = -1;
+      if (inp[this.kR]) mx = 1;
       if (mx) this.face = mx;
 
       // movement
@@ -425,7 +426,8 @@
       }
 
       // jump
-      if (consumeJustPressed(this.kJ) && this.gnd) {
+      const jumpPressed = inputSource ? inputSource[this.kJ] : consumeJustPressed(this.kJ);
+      if (jumpPressed && this.gnd) {
         this.vy = CONFIG.JUMP_FORCE;
         this.gnd = false;
         sound.jump();
@@ -815,6 +817,10 @@
       this.selectedStageIdx = 0;
       this.gameMode = 'multi';   // 'single' | 'multi'
       this.coopType = 'local';   // 'local' | 'online'
+
+      // Client-side interpolation state (used by online client)
+      this._interpState = null; // latest target from host
+      this._inputSendTick = 0;  // throttle client input sends
       this.selectedMode = 1;     // 0=single 1=multi
       this.selectedCoopType = 0; // 0=local 1=online
       this.tick = 0;
@@ -942,23 +948,50 @@
       this.loadStage(stageIdx);
     }
 
+    netEnterWaiting() {
+      // Client transitions to waiting screen after joining
+      document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
+      document.getElementById('connectingOverlay').classList.add('hidden');
+      this.state = STATE.WAITING_HOST;
+    }
+
     netSetClientKeys(clientKeys) {
       this.remoteClientKeys = clientKeys;
     }
 
+    netApplyDeath(data) {
+      // Client receives death event from host
+      this.state = STATE.DYING;
+      this.deaths = data.deaths;
+      this.totDeaths = data.totDeaths;
+      this.deathCD = data.deathCD;
+      this.cam.shake(10);
+      this.snd.death();
+      this.ptcl.emit(this.p1.cx, this.p1.cy, 20, COL.P1, { sMin: -5, sMax: 5, life: 40, sz: 4 });
+      this.ptcl.emit(this.p2.cx, this.p2.cy, 20, COL.P2, { sMin: -5, sMax: 5, life: 40, sz: 4 });
+      document.getElementById('deathCount').textContent = this.deaths;
+      if (IS_MOBILE) {
+        const tctrl = document.getElementById('touchControls');
+        if (tctrl) tctrl.style.display = 'none';
+      }
+    }
+
     netApplySyncFrame(data) {
-      // Apply player states computed by host
-      this.p1.x = data.p1.x;
-      this.p1.y = data.p1.y;
+      // Client-side interpolation: lerp toward target instead of snapping
+      const LERP_SPEED = 0.45; // fast but smooth
+
+      // Lerp player positions for smooth visuals
+      this.p1.x = lerp(this.p1.x, data.p1.x, LERP_SPEED);
+      this.p1.y = lerp(this.p1.y, data.p1.y, LERP_SPEED);
       this.p1.vx = data.p1.vx;
       this.p1.vy = data.p1.vy;
       this.p1.gnd = data.p1.gnd;
       this.p1.face = data.p1.face;
       this.p1.inv = data.p1.inv;
       this.p1.atExit = data.p1.atExit;
-      
-      this.p2.x = data.p2.x;
-      this.p2.y = data.p2.y;
+
+      this.p2.x = lerp(this.p2.x, data.p2.x, LERP_SPEED);
+      this.p2.y = lerp(this.p2.y, data.p2.y, LERP_SPEED);
       this.p2.vx = data.p2.vx;
       this.p2.vy = data.p2.vy;
       this.p2.gnd = data.p2.gnd;
@@ -986,11 +1019,6 @@
             this.drones[idx].y = dData.y;
             this.drones[idx].dead = dData.dead;
             this.drones[idx].alertState = dData.alertState;
-            this.drones[idx].laserDrawTimer = dData.laserDrawTimer;
-            this.drones[idx].sweepAngle = dData.sweepAngle;
-            if (dData.laserTarget) {
-              this.drones[idx].laserTarget = dData.laserTarget;
-            }
           }
         });
       }
@@ -1000,7 +1028,7 @@
       this.stageTime = data.stageTime;
       this.deaths = data.deaths;
       document.getElementById('deathCount').textContent = this.deaths;
-      
+
       this.chain.tension = data.tension;
       if (data.pts) {
         data.pts.forEach((pt, idx) => {
@@ -1011,10 +1039,16 @@
         });
       }
 
+      // Apply state (playing, dying, etc) from host
       this.state = data.state;
       if (this.state === STATE.DYING) {
         this.deathCD = data.deathCD;
       }
+
+      // Camera follows midpoint on client too
+      const mx = (this.p1.cx + this.p2.cx) / 2;
+      const my = (this.p1.cy + this.p2.cy) / 2;
+      this.cam.follow(mx, my, this.wb);
     }
 
     netConfirmStageWin() {
@@ -1027,53 +1061,86 @@
       const old = document.getElementById('touchControls');
       if (old) old.remove();
 
-      const multi = this.gameMode === 'multi';
+      const isOnline = this.gameMode === 'multi' && this.coopType === 'online';
+      const isLocalMulti = this.gameMode === 'multi' && this.coopType === 'local';
+      const isSingle = this.gameMode === 'single';
+
       const ui = document.createElement('div');
       ui.id = 'touchControls';
-      ui.className = multi ? '' : 'tc-solo';
-      
-      // Left side holds movement buttons; right side holds jump button(s)
-      ui.innerHTML = `
-        <div class="tc-side-left">
-          <div class="tc-player-move" id="tcP1Move">
-            <span class="tc-player-label">P1</span>
-            <div class="tc-row">
-              <button class="tc-btn" id="tcP1L">&#9664;</button>
-              <button class="tc-btn" id="tcP1R">&#9654;</button>
-            </div>
-          </div>
-          ${multi ? `
-          <div class="tc-player-move" id="tcP2Move">
-            <span class="tc-player-label">P2</span>
-            <div class="tc-row">
-              <button class="tc-btn" id="tcP2L">&#9664;</button>
-              <button class="tc-btn" id="tcP2R">&#9654;</button>
-            </div>
-          </div>` : ''}
-        </div>
-        <div class="tc-side-right">
-          <div class="tc-player-jump" id="tcP1Jump">
-            <span class="tc-player-label">P1</span>
-            <button class="tc-btn tc-jump" id="tcP1J">&#9650;</button>
-          </div>
-          ${multi ? `
-          <div class="tc-player-jump" id="tcP2Jump">
-            <span class="tc-player-label">P2</span>
-            <button class="tc-btn tc-jump" id="tcP2J">&#9650;</button>
-          </div>` : ''}
-        </div>
-      `;
-      document.body.appendChild(ui);
+      ui.className = (isSingle || isOnline) ? 'tc-solo' : '';
 
-      // Wire up P1 buttons
-      _registerTouchBtn(document.getElementById('tcP1L'), 'KeyA');
-      _registerTouchBtn(document.getElementById('tcP1R'), 'KeyD');
-      _registerTouchBtn(document.getElementById('tcP1J'), 'KeyW');
-      // Wire P2 buttons only in multiplayer
-      if (multi) {
-        _registerTouchBtn(document.getElementById('tcP2L'), 'ArrowLeft');
-        _registerTouchBtn(document.getElementById('tcP2R'), 'ArrowRight');
-        _registerTouchBtn(document.getElementById('tcP2J'), 'ArrowUp');
+      if (isOnline) {
+        // Online co-op: show only ONE set of controls (no P1/P2 label needed)
+        // Both host and client use the same visual buttons, but they map to
+        // different key codes so the right player gets controlled.
+        const leftCode = this.net.isHost ? 'KeyA' : 'ArrowLeft';
+        const rightCode = this.net.isHost ? 'KeyD' : 'ArrowRight';
+        const jumpCode = this.net.isHost ? 'KeyW' : 'ArrowUp';
+        const label = this.net.isHost ? 'P1' : 'P2';
+
+        ui.innerHTML = `
+          <div class="tc-side-left">
+            <div class="tc-player-move" id="tcMyMove">
+              <span class="tc-player-label">${label}</span>
+              <div class="tc-row">
+                <button class="tc-btn" id="tcMyL">&#9664;</button>
+                <button class="tc-btn" id="tcMyR">&#9654;</button>
+              </div>
+            </div>
+          </div>
+          <div class="tc-side-right">
+            <div class="tc-player-jump" id="tcMyJump">
+              <span class="tc-player-label">${label}</span>
+              <button class="tc-btn tc-jump" id="tcMyJ">&#9650;</button>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(ui);
+        _registerTouchBtn(document.getElementById('tcMyL'), leftCode);
+        _registerTouchBtn(document.getElementById('tcMyR'), rightCode);
+        _registerTouchBtn(document.getElementById('tcMyJ'), jumpCode);
+      } else {
+        // Single player or Local 2P: current behavior
+        const multi = isLocalMulti;
+        ui.innerHTML = `
+          <div class="tc-side-left">
+            <div class="tc-player-move" id="tcP1Move">
+              <span class="tc-player-label">P1</span>
+              <div class="tc-row">
+                <button class="tc-btn" id="tcP1L">&#9664;</button>
+                <button class="tc-btn" id="tcP1R">&#9654;</button>
+              </div>
+            </div>
+            ${multi ? `
+            <div class="tc-player-move" id="tcP2Move">
+              <span class="tc-player-label">P2</span>
+              <div class="tc-row">
+                <button class="tc-btn" id="tcP2L">&#9664;</button>
+                <button class="tc-btn" id="tcP2R">&#9654;</button>
+              </div>
+            </div>` : ''}
+          </div>
+          <div class="tc-side-right">
+            <div class="tc-player-jump" id="tcP1Jump">
+              <span class="tc-player-label">P1</span>
+              <button class="tc-btn tc-jump" id="tcP1J">&#9650;</button>
+            </div>
+            ${multi ? `
+            <div class="tc-player-jump" id="tcP2Jump">
+              <span class="tc-player-label">P2</span>
+              <button class="tc-btn tc-jump" id="tcP2J">&#9650;</button>
+            </div>` : ''}
+          </div>
+        `;
+        document.body.appendChild(ui);
+        _registerTouchBtn(document.getElementById('tcP1L'), 'KeyA');
+        _registerTouchBtn(document.getElementById('tcP1R'), 'KeyD');
+        _registerTouchBtn(document.getElementById('tcP1J'), 'KeyW');
+        if (multi) {
+          _registerTouchBtn(document.getElementById('tcP2L'), 'ArrowLeft');
+          _registerTouchBtn(document.getElementById('tcP2R'), 'ArrowRight');
+          _registerTouchBtn(document.getElementById('tcP2J'), 'ArrowUp');
+        }
       }
     }
 
@@ -1226,6 +1293,7 @@
         case STATE.MODE_SELECT: this._updateModeSelect(); break;
         case STATE.COOP_TYPE_SELECT: this._updateCoopTypeSelect(); break;
         case STATE.STAGE_SELECT: this._updateStageSelect(); break;
+        case STATE.WAITING_HOST: this._updateWaitingHost(); break;
         case STATE.INTRO: this._updateIntro(); break;
         case STATE.PLAYING: this._updatePlay(); break;
         case STATE.DYING: this._updateDying(); break;
@@ -1359,22 +1427,31 @@
       this.cam.follow(midX, midY, this.wb);
     }
 
+    _updateWaitingHost() {
+      // Client is waiting for the host to select a level
+      this.menuBlink++;
+      // Nothing to do — just animate the waiting screen
+      // The host will send a 'launch' message when ready
+    }
+
     _updatePlay() {
-      // online multiplayer client does not run physics locally
+      // ---- ONLINE CLIENT: send inputs to host, don't run physics ----
       if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-        // Just report keys to Host
-        this.net.sendState({
-          type: 'sync',
-          keys: {
-            ArrowLeft: keys['ArrowLeft'],
-            ArrowRight: keys['ArrowRight'],
-            ArrowUp: keys['ArrowUp'],
-            // Support touch controller mapping triggers
-            KeyA: keys['KeyA'],
-            KeyD: keys['KeyD'],
-            KeyW: keys['KeyW']
-          }
-        });
+        // Throttle input sends to every 3rd tick to reduce bandwidth
+        this._inputSendTick++;
+        if (this._inputSendTick >= 3) {
+          this._inputSendTick = 0;
+          // Send all local inputs — host will apply them to P2
+          this.net.sendState({
+            type: 'input',
+            keys: {
+              ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
+              ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
+              ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
+            }
+          });
+        }
+        // Client rendering is driven by netApplySyncFrame — no local physics
         return;
       }
 
@@ -1385,14 +1462,12 @@
         if (p.type === 'moving') {
           if (p.moveAxis === 'x') {
             p.x += p.moveSpeed * p._dir;
-            // clamp to bounds, then flip
             if (p.x <= p.moveMin) { p.x = p.moveMin; p._dir = 1; }
             else if (p.x >= p.moveMax) { p.x = p.moveMax; p._dir = -1; }
             p.platformDx = p.moveSpeed * p._dir;
             p.platformDy = 0;
           } else {
             p.y += p.moveSpeed * p._dir;
-            // clamp to bounds, then flip
             if (p.y <= p.moveMin) { p.y = p.moveMin; p._dir = 1; }
             else if (p.y >= p.moveMax) { p.y = p.moveMax; p._dir = -1; }
             p.platformDx = 0;
@@ -1417,6 +1492,7 @@
       }
 
       const isSingle = this.gameMode === 'single';
+      const isOnlineHost = this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost;
 
       // chain forces (multiplayer only)
       let cf = null;
@@ -1427,56 +1503,42 @@
         );
       }
 
-      // Online Multiplayer inputs interception
-      let activeKeys = keys;
-      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-        // Host overrides P2 keys using remote inputs sent by guest
-        activeKeys = {
-          ...keys,
-          ArrowLeft: this.remoteClientKeys.ArrowLeft || this.remoteClientKeys.KeyA,
-          ArrowRight: this.remoteClientKeys.ArrowRight || this.remoteClientKeys.KeyD,
-          ArrowUp: this.remoteClientKeys.ArrowUp || this.remoteClientKeys.KeyW
+      // ---- Build input sources ----
+      // P1 always reads from local keys (WASD or Arrows — both work for P1)
+      // In online mode, the Host's local keys control P1. Arrow keys are
+      // also mapped to P1 so the host can use either WASD or Arrows.
+      let p1Input = null; // null = use default global keys
+      let p2Input = null;
+
+      if (isOnlineHost) {
+        // Host controls P1: merge both WASD and Arrow keys into P1's keycodes
+        p1Input = {
+          'KeyA': !!(keys['KeyA'] || keys['ArrowLeft']),
+          'KeyD': !!(keys['KeyD'] || keys['ArrowRight']),
+          'KeyW': !!(keys['KeyW'] || keys['ArrowUp'])
+        };
+        // P2 is controlled by remote client inputs
+        const rk = this.remoteClientKeys;
+        p2Input = {
+          'ArrowLeft': !!(rk.ArrowLeft),
+          'ArrowRight': !!(rk.ArrowRight),
+          'ArrowUp': !!(rk.ArrowUp)
         };
       }
 
-      // Local variables pointing to active inputs mapping
-      const p1MX = (activeKeys['KeyA'] || activeKeys['ArrowLeft']) ? (activeKeys['KeyA'] ? -1 : 1) : 0;
-      
       // Update P1
-      const oldKeys = { ...keys };
-      // Override keys temporarily for Player 1 update
-      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-        // Player 1 uses local keys W/A/D or Arrow keys (whichever matches)
-        keys['KeyA'] = activeKeys['KeyA'];
-        keys['KeyD'] = activeKeys['KeyD'];
-        keys['KeyW'] = activeKeys['KeyW'];
-      }
-      
       const r1 = this.p1.update(this.plats,
         cf ? cf.a.fx : 0, cf ? cf.a.fy : 0,
         cf && cf.a.cx !== undefined ? { cx: cf.a.cx, cy: cf.a.cy } : null,
-        this.ptcl, this.snd, this.wb);
+        this.ptcl, this.snd, this.wb, p1Input);
 
-      // restore keys
-      Object.assign(keys, oldKeys);
-
-      // update P2 (multiplayer only)
+      // Update P2 (multiplayer only)
       let r2 = null;
       if (!isSingle) {
-        const oldKeysP2 = { ...keys };
-        if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-          // Player 2 uses client inputs mapped to Arrow Keys
-          keys['ArrowLeft'] = activeKeys['ArrowLeft'];
-          keys['ArrowRight'] = activeKeys['ArrowRight'];
-          keys['ArrowUp'] = activeKeys['ArrowUp'];
-        }
-        
         r2 = this.p2.update(this.plats,
           cf.b.fx, cf.b.fy,
           cf.b.cx !== undefined ? { cx: cf.b.cx, cy: cf.b.cy } : null,
-          this.ptcl, this.snd, this.wb);
-          
-        Object.assign(keys, oldKeysP2);
+          this.ptcl, this.snd, this.wb, p2Input);
       }
 
       // update drones
@@ -1536,9 +1598,9 @@
       const my = isSingle ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
 
-      // Send sync states from host to client
-      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-        this.net.sendState({
+      // ---- Host → Client sync (throttled to every 3rd tick) ----
+      if (isOnlineHost) {
+        this.net.trySendSync({
           type: 'sync',
           state: this.state,
           deathCD: this.deathCD,
@@ -1555,10 +1617,7 @@
             gnd: this.p2.gnd, face: this.p2.face, inv: this.p2.inv, atExit: this.p2.atExit
           },
           plats: this.plats.map(p => ({ x: p.x, y: p.y, gone: p.gone, opacity: p.opacity })),
-          drones: this.drones.map(d => ({
-            x: d.x, y: d.y, dead: d.dead, alertState: d.alertState,
-            laserDrawTimer: d.laserDrawTimer, sweepAngle: d.sweepAngle, laserTarget: d.laserTarget
-          })),
+          drones: this.drones.map(d => ({ x: d.x, y: d.y, dead: d.dead, alertState: d.alertState })),
           pts: this.chain.pts.map(pt => ({ x: pt.x, y: pt.y }))
         });
       }
@@ -1669,6 +1728,7 @@
       else if (this.state === STATE.MODE_SELECT) { this._renderModeSelect(); }
       else if (this.state === STATE.COOP_TYPE_SELECT) { this._renderCoopTypeSelect(); }
       else if (this.state === STATE.STAGE_SELECT) { this._renderStageSelect(); }
+      else if (this.state === STATE.WAITING_HOST) { this._renderWaitingHost(); }
       else { this._renderGame(); }
 
       // fade
@@ -1678,23 +1738,25 @@
       }
     }
 
-    _renderStageSelect() {
-      // Online Client does not select stage, just display connecting overlay or wait for host
-      if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-        const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        g.addColorStop(0, '#05051a'); g.addColorStop(1, '#11052C');
-        ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        this.stars.draw(ctx, 0, 0, this.tick);
-        
-        ctx.save();
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#00e5ff';
-        ctx.font = 'bold 24px Orbitron, sans-serif';
-        ctx.fillText('WAITING FOR HOST TO SELECT LEVEL...', canvas.width / 2, canvas.height / 2);
-        ctx.restore();
-        return;
-      }
+    _renderWaitingHost() {
+      const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      g.addColorStop(0, '#05051a'); g.addColorStop(1, '#11052C');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      this.stars.draw(ctx, 0, 0, this.tick);
+      
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#00e5ff';
+      ctx.font = 'bold 24px Orbitron, sans-serif';
+      
+      // blinking text effect
+      const alpha = 0.5 + Math.sin(this.tick * 0.08) * 0.5;
+      ctx.fillStyle = `rgba(0, 229, 255, ${alpha})`;
+      ctx.fillText('CONNECTED! WAITING FOR HOST TO SELECT LEVEL...', canvas.width / 2, canvas.height / 2);
+      ctx.restore();
+    }
 
+    _renderStageSelect() {
       const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
       g.addColorStop(0, '#05051a'); g.addColorStop(1, '#11052C');
       ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2538,8 +2600,14 @@
         }
       }
 
-      if (s === STATE.MENU || s === STATE.STAGE_SELECT ||
-          s === STATE.STAGE_COMPLETE || s === STATE.INTRO) {
+      if (s === STATE.MENU || s === STATE.STAGE_COMPLETE || s === STATE.INTRO) {
+        triggerTap();
+      }
+      if (s === STATE.STAGE_SELECT) {
+        // Online client should not trigger select screen tap to launch level
+        if (game.gameMode === 'multi' && game.coopType === 'online' && !game.net.isHost) {
+          return;
+        }
         triggerTap();
       }
       // Game-over: tap restarts
