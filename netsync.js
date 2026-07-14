@@ -1,6 +1,6 @@
 // ============================================================
 // CHAINED TOGETHER — Peer-to-Peer Network Sync Layer
-// ZERO-LAG EDITION: Prediction + Interpolation + Reconciliation
+// Optimized WebRTC + public signaling connector
 // ============================================================
 
 class NetSync {
@@ -16,30 +16,9 @@ class NetSync {
     this.SYNC_INTERVAL = 3;
     this._syncTick = 0;
 
-    // Latency tracking
-    this.currentLatency = 0;
-    this.latencyHistory = [];
-
-    // Client-side prediction state
-    this.prediction = {
-      pendingInputs: [],
-      sequenceNumber: 0,
-      lastAcknowledgedSeq: 0
-    };
-
-    // Entity interpolation state
-    this.interp = {
-      buffer: [],
-      renderX: 0,
-      renderY: 0,
-      renderVX: 0,
-      renderVY: 0,
-      delay: 50
-    };
-
-    // Heartbeat
-    this._heartbeatInterval = null;
-    this._lastDataReceived = Date.now();
+    // Client-side interpolation targets
+    this._lerpTargets = null; // { p1, p2, cam } set by incoming sync frames
+    this._lerpAlpha = 0;
 
     this.peerjsScriptLoaded = false;
   }
@@ -129,10 +108,10 @@ class NetSync {
       this.peer.on('open', () => {
         console.log('[NetSync] Connecting to host:', targetHostId);
 
+        // Use reliable: false (unreliable/UDP mode) for minimum latency and real-time responsiveness.
+        // To handle packet loss for initial critical setup states (like launch/joined), we will send connection setup messages reliably.
         const conn = this.peer.connect(targetHostId, {
-          reliable: false,
-          ordered: false,
-          maxRetransmits: 0
+          reliable: false
         });
 
         this._setupConnection(conn);
@@ -176,17 +155,14 @@ class NetSync {
 
     conn.on('open', () => {
       this.connected = true;
-      this._lastDataReceived = Date.now();
       console.log('[NetSync] Data channel open!');
 
       // Hide lobby overlays
       document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
       document.getElementById('connectingOverlay').classList.add('hidden');
 
-      // Start heartbeat
-      this._startHeartbeat();
-
       if (this.isHost) {
+        // Send 'joined' multiple times with a small delay to guarantee client receives it and doesn't get stuck in lobby
         let attempts = 0;
         const interval = setInterval(() => {
           if (this.conn && this.conn.open) {
@@ -196,14 +172,15 @@ class NetSync {
           if (attempts >= 5 || !this.connected) clearInterval(interval);
         }, 150);
 
+        // Host goes to stage select
         this.game.netLaunchGame();
       } else {
+        // Client enters waiting state
         this.game.netEnterWaiting();
       }
     });
 
     conn.on('data', (data) => {
-      this._lastDataReceived = Date.now();
       this._handleNetworkData(data);
     });
 
@@ -218,36 +195,10 @@ class NetSync {
     });
   }
 
-  _startHeartbeat() {
-    this._stopHeartbeat();
-    this._heartbeatInterval = setInterval(() => {
-      if (!this.connected) {
-        this._stopHeartbeat();
-        return;
-      }
-      if (Date.now() - this._lastDataReceived > 5000) {
-        console.warn('[NetSync] No data for 5s, checking connection...');
-        this.sendState({ type: 'heartbeat' });
-      }
-      this.sendState({ type: 'ping', time: performance.now() });
-    }, 1000);
-  }
-
-  _stopHeartbeat() {
-    if (this._heartbeatInterval) {
-      clearInterval(this._heartbeatInterval);
-      this._heartbeatInterval = null;
-    }
-  }
-
   // Send data to peer
   sendState(payload) {
     if (this.conn && this.conn.open) {
-      try {
-        this.conn.send(payload);
-      } catch (e) {
-        console.error('[NetSync] Send error:', e);
-      }
+      this.conn.send(payload);
     }
   }
 
@@ -260,113 +211,36 @@ class NetSync {
     }
   }
 
-  // Entity interpolation - called every frame on client
-  updateInterpolation() {
-    if (this.isHost || !this.connected) return;
-
-    const buffer = this.interp.buffer;
-    if (buffer.length === 0) return;
-    
-    if (buffer.length === 1) {
-      this.interp.renderX = buffer[0].x;
-      this.interp.renderY = buffer[0].y;
-      return;
-    }
-
-    const renderTime = performance.now() - this.interp.delay;
-    let from = null, to = null;
-
-    for (let i = 0; i < buffer.length - 1; i++) {
-      if (buffer[i].timestamp <= renderTime && buffer[i + 1].timestamp >= renderTime) {
-        from = buffer[i];
-        to = buffer[i + 1];
-        break;
-      }
-    }
-
-    if (!from || !to) {
-      const latest = buffer[buffer.length - 1];
-      this.interp.renderX = latest.x;
-      this.interp.renderY = latest.y;
-      return;
-    }
-
-    const duration = to.timestamp - from.timestamp;
-    const elapsed = renderTime - from.timestamp;
-    const t = duration > 0 ? Math.min(Math.max(elapsed / duration, 0), 1) : 0;
-    const smoothT = t * t * (3 - 2 * t);
-    
-    this.interp.renderX = from.x + (to.x - from.x) * smoothT;
-    this.interp.renderY = from.y + (to.y - from.y) * smoothT;
-  }
-
   _handleNetworkData(data) {
     if (!data || !data.type) return;
 
     switch (data.type) {
       case 'joined':
+        // Client received confirmation from host
         this.game.netEnterWaiting();
         break;
 
       case 'launch':
+        // Host selected a stage — client loads it
         this.game.netLaunchStage(data.stageIdx);
         break;
 
-      case 'heartbeat':
-        break;
-
-      case 'ping':
-        this.sendState({ type: 'pong', time: data.time });
-        break;
-
-      case 'pong':
-        this.currentLatency = (performance.now() - data.time) / 2;
-        this.latencyHistory.push(this.currentLatency);
-        if (this.latencyHistory.length > 20) this.latencyHistory.shift();
-        this._adjustInterpolationDelay();
-        break;
-
       case 'input':
+        // Host receives client's P2 inputs
         if (this.isHost) {
           this.game.netSetClientKeys(data.keys);
-          if (this.game.p2 && data.seq) {
-            this.sendState({
-              type: 'input_ack',
-              seq: data.seq,
-              x: this.game.p2.x,
-              y: this.game.p2.y,
-              vx: this.game.p2.vx || 0,
-              vy: this.game.p2.vy || 0
-            });
-          }
-        }
-        break;
-
-      case 'input_ack':
-        if (!this.isHost) {
-          this.prediction.pendingInputs = this.prediction.pendingInputs.filter(
-            input => input.seq > data.seq
-          );
-          this.prediction.lastAcknowledgedSeq = data.seq;
-          this._reconcileP2(data);
         }
         break;
 
       case 'sync':
+        // Client receives authoritative game state from host
         if (!this.isHost) {
-          this.interp.buffer.push({
-            timestamp: performance.now(),
-            x: data.p1.x,
-            y: data.p1.y,
-            vx: data.p1.vx || 0,
-            vy: data.p1.vy || 0
-          });
-          while (this.interp.buffer.length > 8) this.interp.buffer.shift();
           this.game.netApplySyncFrame(data);
         }
         break;
 
       case 'death':
+        // Host tells client a death occurred
         if (!this.isHost) {
           this.game.netApplyDeath(data);
         }
@@ -378,40 +252,8 @@ class NetSync {
     }
   }
 
-  _reconcileP2(serverState) {
-    if (this.isHost || !this.game.p2) return;
-    
-    const p2 = this.game.p2;
-    const dx = serverState.x - p2.x;
-    const dy = serverState.y - p2.y;
-    const error = Math.sqrt(dx * dx + dy * dy);
-
-    if (error > 10) {
-      p2.x += dx * 0.3;
-      p2.y += dy * 0.3;
-      p2.vx = serverState.vx;
-      p2.vy = serverState.vy;
-    } else if (error > 3) {
-      p2.x += dx * 0.15;
-      p2.y += dy * 0.15;
-    } else if (error > 0.5) {
-      p2.x += dx * 0.05;
-      p2.y += dy * 0.05;
-    }
-  }
-
-  _adjustInterpolationDelay() {
-    if (this.latencyHistory.length < 3) return;
-    const avg = this.latencyHistory.reduce((a, b) => a + b, 0) / this.latencyHistory.length;
-    const variance = this.latencyHistory.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / this.latencyHistory.length;
-    const jitter = Math.sqrt(variance);
-    this.interp.delay = Math.min(Math.max(avg + jitter * 1.5, 16), 100);
-  }
-
   disconnect() {
     this.connected = false;
-    this._stopHeartbeat();
-    
     if (this.conn) {
       try { this.conn.close(); } catch (e) { /* ignore */ }
       this.conn = null;
@@ -421,10 +263,7 @@ class NetSync {
       this.peer = null;
     }
 
-    this.prediction.pendingInputs = [];
-    this.prediction.sequenceNumber = 0;
-    this.interp.buffer = [];
-
+    // Hide overlays, return to title
     document.getElementById('connectingOverlay').classList.add('hidden');
     document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
     document.getElementById('hud').classList.add('hidden');
@@ -435,11 +274,5 @@ class NetSync {
       this.game.state = STATE.MENU;
       alert('Disconnected from peer.');
     }
-  }
-
-  destroy() {
-    this._stopHeartbeat();
-    this.disconnect();
-    this.game = null;
   }
 }
