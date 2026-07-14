@@ -82,6 +82,56 @@
     </div>
   </div>
 
+  <!-- Multiplayer Network Lobby Overlay -->
+  <div id="multiplayerLobbyOverlay" class="overlay hidden">
+    <div class="overlay-card lobby-card">
+      <div class="overlay-icon">🌐</div>
+      <h2 class="overlay-title">MULTIPLAYER LOBBY</h2>
+      <p class="overlay-subtitle">Connect with another device to play Co-Op</p>
+
+      <div class="lobby-panels">
+        <!-- HOST PANEL -->
+        <div class="lobby-panel" id="hostPanel">
+          <h3>HOST A GAME</h3>
+          <p class="panel-desc">Create a room and share the Code with Player 2</p>
+          <button class="lobby-btn" id="createRoomBtn">CREATE ROOM</button>
+          
+          <div id="roomCodeContainer" class="hidden-element">
+            <span class="code-label">YOUR ROOM CODE:</span>
+            <div class="code-display-row">
+              <span id="displayRoomCode" class="room-code-text">------</span>
+              <button class="copy-btn" id="copyCodeBtn">COPY</button>
+            </div>
+            <span class="status-msg" id="hostStatus">Waiting for Player 2 to join...</span>
+          </div>
+        </div>
+
+        <!-- DIVIDER -->
+        <div class="lobby-divider">OR</div>
+
+        <!-- JOIN PANEL -->
+        <div class="lobby-panel" id="joinPanel">
+          <h3>JOIN A GAME</h3>
+          <p class="panel-desc">Enter the Room Code shared by Player 1</p>
+          <input type="text" id="roomCodeInput" class="lobby-input" placeholder="ENTER CODE" maxlength="6" autocomplete="off">
+          <button class="lobby-btn join-accent" id="joinRoomBtn">JOIN ROOM</button>
+          <span class="status-msg error-msg" id="joinStatus"></span>
+        </div>
+      </div>
+
+      <button class="lobby-back-btn" id="lobbyBackBtn">BACK TO MODE SELECT</button>
+    </div>
+  </div>
+
+  <!-- Multiplayer Connecting Overlay -->
+  <div id="connectingOverlay" class="overlay hidden">
+    <div class="overlay-card mini-card">
+      <div class="spinner"></div>
+      <h2 class="overlay-title" style="font-size: 20px; margin-top: 15px;">CONNECTING...</h2>
+      <p id="connectingStatusMsg" class="overlay-subtitle" style="font-size: 14px; margin-bottom: 0;">Establishing peer-to-peer connection</p>
+    </div>
+  </div>
+
   <!-- Portrait rotation warning -->
   <div id="portraitOverlay">
     <div class="rotate-icon">&#x1F4F1;</div>
@@ -90,6 +140,7 @@
   </div>
 
   <script src="stages.js"></script>
+  <script src="netsync.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

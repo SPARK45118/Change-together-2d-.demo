@@ -58,7 +58,7 @@
     EXIT: '#00ff66',
   };
 
-  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6, MODE_SELECT: 7 };
+  const STATE = { MENU: 0, PLAYING: 1, STAGE_COMPLETE: 2, GAME_OVER: 3, DYING: 4, INTRO: 5, STAGE_SELECT: 6, MODE_SELECT: 7, COOP_TYPE_SELECT: 8 };
 
   // ============================================================
   // UTILITIES
@@ -814,7 +814,9 @@
       this.stageIdx = 0;
       this.selectedStageIdx = 0;
       this.gameMode = 'multi';   // 'single' | 'multi'
+      this.coopType = 'local';   // 'local' | 'online'
       this.selectedMode = 1;     // 0=single 1=multi
+      this.selectedCoopType = 0; // 0=local 1=online
       this.tick = 0;
       this.stageTime = 0;
       this.deaths = 0;
@@ -823,6 +825,9 @@
       this.deathCD = 0;
       this.introTimer = 0;
       this.menuBlink = 0;
+
+      this.net = new NetSync(this);
+      this.remoteClientKeys = {}; // Keys received from Client (Host side)
 
       this.snd = new SoundMgr();
       this.ptcl = new Particles();
@@ -842,14 +847,172 @@
 
       this.fade = 0; this.fadeDir = 0; this.fadeCB = null;
 
-      this._loop = this._loop.bind(this);
-      this._lastTime = 0;
-      this._accumulator = 0;
-      this._fixedStep = 1000 / 60; // 16.667ms per physics tick
-      requestAnimationFrame(this._loop);
-
       // Build touch UI after a short delay (DOM must be ready)
       if (IS_MOBILE) this._buildTouchUI();
+      
+      // Wire up Peer Network DOM buttons
+      this._wireLobbyEvents();
+    }
+
+    _wireLobbyEvents() {
+      const createBtn = document.getElementById('createRoomBtn');
+      const joinBtn = document.getElementById('joinRoomBtn');
+      const copyBtn = document.getElementById('copyCodeBtn');
+      const backBtn = document.getElementById('lobbyBackBtn');
+      
+      if (createBtn) {
+        createBtn.addEventListener('click', async () => {
+          createBtn.disabled = true;
+          createBtn.textContent = 'CREATING...';
+          try {
+            const code = await this.net.hostRoom();
+            document.getElementById('displayRoomCode').textContent = code;
+            document.getElementById('roomCodeContainer').classList.remove('hidden-element');
+            document.getElementById('hostStatus').textContent = 'Waiting for Player 2 to join...';
+          } catch (e) {
+            alert('Failed to host: ' + e.message);
+            createBtn.disabled = false;
+            createBtn.textContent = 'CREATE ROOM';
+          }
+        });
+      }
+
+      if (joinBtn) {
+        joinBtn.addEventListener('click', async () => {
+          const codeInput = document.getElementById('roomCodeInput');
+          const code = codeInput ? codeInput.value.trim() : '';
+          const status = document.getElementById('joinStatus');
+          
+          if (!code || code.length < 6) {
+            if (status) status.textContent = 'ENTER A VALID 6-CHAR CODE';
+            return;
+          }
+          
+          if (status) status.textContent = '';
+          joinBtn.disabled = true;
+          document.getElementById('connectingOverlay').classList.remove('hidden');
+          document.getElementById('connectingStatusMsg').textContent = 'Connecting to room ' + code.toUpperCase();
+          
+          try {
+            await this.net.joinRoom(code);
+          } catch (e) {
+            document.getElementById('connectingOverlay').classList.add('hidden');
+            joinBtn.disabled = false;
+            if (status) status.textContent = 'FAILED TO JOIN: ' + e.message;
+          }
+        });
+      }
+
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          const code = document.getElementById('displayRoomCode').textContent;
+          navigator.clipboard.writeText(code).then(() => {
+            copyBtn.textContent = 'COPIED!';
+            setTimeout(() => { copyBtn.textContent = 'COPY'; }, 2000);
+          });
+        });
+      }
+
+      if (backBtn) {
+        backBtn.addEventListener('click', () => {
+          this.net.disconnect();
+          document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
+          this.startFade(1, () => {
+            this.state = STATE.COOP_TYPE_SELECT;
+          });
+        });
+      }
+    }
+
+    // --- Multiplayer synchronization callbacks ---
+    netLaunchGame() {
+      // Host selects the stage
+      this.state = STATE.STAGE_SELECT;
+      this.selectedStageIdx = 0;
+    }
+
+    netLaunchStage(stageIdx) {
+      document.getElementById('hud').classList.remove('hidden');
+      this.loadStage(stageIdx);
+    }
+
+    netSetClientKeys(clientKeys) {
+      this.remoteClientKeys = clientKeys;
+    }
+
+    netApplySyncFrame(data) {
+      // Apply player states computed by host
+      this.p1.x = data.p1.x;
+      this.p1.y = data.p1.y;
+      this.p1.vx = data.p1.vx;
+      this.p1.vy = data.p1.vy;
+      this.p1.gnd = data.p1.gnd;
+      this.p1.face = data.p1.face;
+      this.p1.inv = data.p1.inv;
+      this.p1.atExit = data.p1.atExit;
+      
+      this.p2.x = data.p2.x;
+      this.p2.y = data.p2.y;
+      this.p2.vx = data.p2.vx;
+      this.p2.vy = data.p2.vy;
+      this.p2.gnd = data.p2.gnd;
+      this.p2.face = data.p2.face;
+      this.p2.inv = data.p2.inv;
+      this.p2.atExit = data.p2.atExit;
+
+      // Sync platforms
+      if (data.plats) {
+        data.plats.forEach((pData, idx) => {
+          if (this.plats[idx]) {
+            this.plats[idx].x = pData.x;
+            this.plats[idx].y = pData.y;
+            this.plats[idx].gone = pData.gone;
+            this.plats[idx].opacity = pData.opacity;
+          }
+        });
+      }
+
+      // Sync drones
+      if (data.drones) {
+        data.drones.forEach((dData, idx) => {
+          if (this.drones[idx]) {
+            this.drones[idx].x = dData.x;
+            this.drones[idx].y = dData.y;
+            this.drones[idx].dead = dData.dead;
+            this.drones[idx].alertState = dData.alertState;
+            this.drones[idx].laserDrawTimer = dData.laserDrawTimer;
+            this.drones[idx].sweepAngle = dData.sweepAngle;
+            if (dData.laserTarget) {
+              this.drones[idx].laserTarget = dData.laserTarget;
+            }
+          }
+        });
+      }
+
+      // Sync chain & environment metrics
+      this.chainHeat = data.chainHeat;
+      this.stageTime = data.stageTime;
+      this.deaths = data.deaths;
+      document.getElementById('deathCount').textContent = this.deaths;
+      
+      this.chain.tension = data.tension;
+      if (data.pts) {
+        data.pts.forEach((pt, idx) => {
+          if (this.chain.pts[idx]) {
+            this.chain.pts[idx].x = pt.x;
+            this.chain.pts[idx].y = pt.y;
+          }
+        });
+      }
+
+      this.state = data.state;
+      if (this.state === STATE.DYING) {
+        this.deathCD = data.deathCD;
+      }
+    }
+
+    netConfirmStageWin() {
+      this._stageWin();
     }
 
     // ---- Touch UI ----
@@ -1055,6 +1218,7 @@
       switch (this.state) {
         case STATE.MENU: this._updateMenu(); break;
         case STATE.MODE_SELECT: this._updateModeSelect(); break;
+        case STATE.COOP_TYPE_SELECT: this._updateCoopTypeSelect(); break;
         case STATE.STAGE_SELECT: this._updateStageSelect(); break;
         case STATE.INTRO: this._updateIntro(); break;
         case STATE.PLAYING: this._updatePlay(); break;
@@ -1087,14 +1251,53 @@
       // Confirm
       if (consumeJustPressed('Enter') || consumeJustPressed('Space') || consumeJustPressed('__TAP__')) {
         this.gameMode = this.selectedMode === 0 ? 'single' : 'multi';
-        if (IS_MOBILE) this._buildTouchUI();
         this.startFade(1, () => {
-          this.state = STATE.STAGE_SELECT;
-          this.selectedStageIdx = 0;
+          if (this.gameMode === 'multi') {
+            this.state = STATE.COOP_TYPE_SELECT;
+          } else {
+            if (IS_MOBILE) this._buildTouchUI();
+            this.state = STATE.STAGE_SELECT;
+            this.selectedStageIdx = 0;
+          }
         });
       }
       if (consumeJustPressed('Escape')) {
         this.startFade(1, () => { this.state = STATE.MENU; });
+      }
+    }
+
+    _updateCoopTypeSelect() {
+      this.menuBlink++;
+      if (consumeJustPressed('ArrowLeft') || consumeJustPressed('KeyA')) {
+        this.selectedCoopType = 0; this.snd.land();
+      }
+      if (consumeJustPressed('ArrowRight') || consumeJustPressed('KeyD')) {
+        this.selectedCoopType = 1; this.snd.land();
+      }
+      if (consumeJustPressed('Enter') || consumeJustPressed('Space') || consumeJustPressed('__TAP__')) {
+        this.coopType = this.selectedCoopType === 0 ? 'local' : 'online';
+        
+        this.startFade(1, () => {
+          if (this.coopType === 'online') {
+            // Display lobby overlay
+            document.getElementById('multiplayerLobbyOverlay').classList.remove('hidden');
+            // reset host fields
+            document.getElementById('createRoomBtn').disabled = false;
+            document.getElementById('createRoomBtn').textContent = 'CREATE ROOM';
+            document.getElementById('roomCodeContainer').classList.add('hidden-element');
+            document.getElementById('joinRoomBtn').disabled = false;
+            document.getElementById('roomCodeInput').value = '';
+            document.getElementById('joinStatus').textContent = '';
+          } else {
+            // Local 2-Player (single screen setup)
+            if (IS_MOBILE) this._buildTouchUI();
+            this.state = STATE.STAGE_SELECT;
+            this.selectedStageIdx = 0;
+          }
+        });
+      }
+      if (consumeJustPressed('Escape')) {
+        this.startFade(1, () => { this.state = STATE.MODE_SELECT; });
       }
     }
 
@@ -1122,13 +1325,17 @@
       }
       if (consumeJustPressed('Escape')) {
         this.startFade(1, () => {
-          this.state = STATE.MENU;
+          this.state = this.gameMode === 'multi' ? STATE.COOP_TYPE_SELECT : STATE.MODE_SELECT;
         });
       }
       if (consumeJustPressed('Enter') || consumeJustPressed('Space') || consumeJustPressed('__TAP__')) {
         this.startFade(1, () => {
           document.getElementById('hud').classList.remove('hidden');
           this.loadStage(this.selectedStageIdx);
+          // If in WebRTC online mode and we are the host, notify the guest client
+          if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+            this.net.sendState({ type: 'launch', stageIdx: this.selectedStageIdx });
+          }
         });
       }
     }
@@ -1147,6 +1354,24 @@
     }
 
     _updatePlay() {
+      // online multiplayer client does not run physics locally
+      if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
+        // Just report keys to Host
+        this.net.sendState({
+          type: 'sync',
+          keys: {
+            ArrowLeft: keys['ArrowLeft'],
+            ArrowRight: keys['ArrowRight'],
+            ArrowUp: keys['ArrowUp'],
+            // Support touch controller mapping triggers
+            KeyA: keys['KeyA'],
+            KeyD: keys['KeyD'],
+            KeyW: keys['KeyW']
+          }
+        });
+        return;
+      }
+
       this.stageTime++;
 
       // update moving / disappearing platforms
@@ -1196,19 +1421,56 @@
         );
       }
 
-      // update P1
+      // Online Multiplayer inputs interception
+      let activeKeys = keys;
+      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+        // Host overrides P2 keys using remote inputs sent by guest
+        activeKeys = {
+          ...keys,
+          ArrowLeft: this.remoteClientKeys.ArrowLeft || this.remoteClientKeys.KeyA,
+          ArrowRight: this.remoteClientKeys.ArrowRight || this.remoteClientKeys.KeyD,
+          ArrowUp: this.remoteClientKeys.ArrowUp || this.remoteClientKeys.KeyW
+        };
+      }
+
+      // Local variables pointing to active inputs mapping
+      const p1MX = (activeKeys['KeyA'] || activeKeys['ArrowLeft']) ? (activeKeys['KeyA'] ? -1 : 1) : 0;
+      
+      // Update P1
+      const oldKeys = { ...keys };
+      // Override keys temporarily for Player 1 update
+      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+        // Player 1 uses local keys W/A/D or Arrow keys (whichever matches)
+        keys['KeyA'] = activeKeys['KeyA'];
+        keys['KeyD'] = activeKeys['KeyD'];
+        keys['KeyW'] = activeKeys['KeyW'];
+      }
+      
       const r1 = this.p1.update(this.plats,
         cf ? cf.a.fx : 0, cf ? cf.a.fy : 0,
         cf && cf.a.cx !== undefined ? { cx: cf.a.cx, cy: cf.a.cy } : null,
         this.ptcl, this.snd, this.wb);
 
+      // restore keys
+      Object.assign(keys, oldKeys);
+
       // update P2 (multiplayer only)
       let r2 = null;
       if (!isSingle) {
+        const oldKeysP2 = { ...keys };
+        if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+          // Player 2 uses client inputs mapped to Arrow Keys
+          keys['ArrowLeft'] = activeKeys['ArrowLeft'];
+          keys['ArrowRight'] = activeKeys['ArrowRight'];
+          keys['ArrowUp'] = activeKeys['ArrowUp'];
+        }
+        
         r2 = this.p2.update(this.plats,
           cf.b.fx, cf.b.fy,
           cf.b.cx !== undefined ? { cx: cf.b.cx, cy: cf.b.cy } : null,
           this.ptcl, this.snd, this.wb);
+          
+        Object.assign(keys, oldKeysP2);
       }
 
       // update drones
@@ -1267,6 +1529,33 @@
       const mx = isSingle ? this.p1.cx : (this.p1.cx + this.p2.cx) / 2;
       const my = isSingle ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
+
+      // Send sync states from host to client
+      if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+        this.net.sendState({
+          type: 'sync',
+          state: this.state,
+          deathCD: this.deathCD,
+          stageTime: this.stageTime,
+          deaths: this.deaths,
+          chainHeat: this.chainHeat,
+          tension: this.chain.tension,
+          p1: {
+            x: this.p1.x, y: this.p1.y, vx: this.p1.vx, vy: this.p1.vy,
+            gnd: this.p1.gnd, face: this.p1.face, inv: this.p1.inv, atExit: this.p1.atExit
+          },
+          p2: {
+            x: this.p2.x, y: this.p2.y, vx: this.p2.vx, vy: this.p2.vy,
+            gnd: this.p2.gnd, face: this.p2.face, inv: this.p2.inv, atExit: this.p2.atExit
+          },
+          plats: this.plats.map(p => ({ x: p.x, y: p.y, gone: p.gone, opacity: p.opacity })),
+          drones: this.drones.map(d => ({
+            x: d.x, y: d.y, dead: d.dead, alertState: d.alertState,
+            laserDrawTimer: d.laserDrawTimer, sweepAngle: d.sweepAngle, laserTarget: d.laserTarget
+          })),
+          pts: this.chain.pts.map(pt => ({ x: pt.x, y: pt.y }))
+        });
+      }
     }
 
     _die() {
@@ -1312,8 +1601,20 @@
         this.ptcl.emit(this.exit.x + this.exit.w / 2 + rand(-20, 20),
           this.exit.y + rand(-10, 10), 4, COL.EXIT, { sMin: -2, sMax: 2, life: 30, sz: 3 });
       }
+
+      // Online client cannot proceed without host
+      if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
+        return;
+      }
+
       if (keys['Enter'] || keys['Space'] || keys['__TAP__']) {
         keys['__TAP__'] = false;
+        
+        // Notify client to clear overlay
+        if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
+          this.net.sendState({ type: 'complete_confirm' });
+        }
+
         const el = document.getElementById('stageCompleteOverlay');
         el.classList.remove('visible'); el.classList.add('hidden');
 
@@ -1360,6 +1661,7 @@
 
       if (this.state === STATE.MENU) { this._renderMenu(); }
       else if (this.state === STATE.MODE_SELECT) { this._renderModeSelect(); }
+      else if (this.state === STATE.COOP_TYPE_SELECT) { this._renderCoopTypeSelect(); }
       else if (this.state === STATE.STAGE_SELECT) { this._renderStageSelect(); }
       else { this._renderGame(); }
 
@@ -1371,6 +1673,22 @@
     }
 
     _renderStageSelect() {
+      // Online Client does not select stage, just display connecting overlay or wait for host
+      if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
+        const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        g.addColorStop(0, '#05051a'); g.addColorStop(1, '#11052C');
+        ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        this.stars.draw(ctx, 0, 0, this.tick);
+        
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#00e5ff';
+        ctx.font = 'bold 24px Orbitron, sans-serif';
+        ctx.fillText('WAITING FOR HOST TO SELECT LEVEL...', canvas.width / 2, canvas.height / 2);
+        ctx.restore();
+        return;
+      }
+
       const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
       g.addColorStop(0, '#05051a'); g.addColorStop(1, '#11052C');
       ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1752,6 +2070,114 @@
       ctx.restore();
     }
 
+    // --- COOP TYPE SELECT ---
+    _renderCoopTypeSelect() {
+      const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      g.addColorStop(0, '#0a0a2e'); g.addColorStop(1, '#05182a');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      this.stars.draw(ctx, 0, 0, this.tick);
+
+      const cxs = canvas.width / 2;
+      const cys = canvas.height / 2;
+
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 28px Orbitron, sans-serif';
+      ctx.shadowBlur = 20; ctx.shadowColor = '#ffd700';
+      ctx.fillText('SELECT  CO-OP  TYPE', cxs, cys - 155);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      const cardW = Math.min(220, canvas.width * 0.38);
+      const cardH = 220;
+      const gap = Math.min(40, canvas.width * 0.06);
+      const card0X = cxs - gap / 2 - cardW;
+      const card1X = cxs + gap / 2;
+      const cardY = cys - cardH / 2 - 10;
+
+      const types = [
+        { label: 'LOCAL 2P', sub: 'Play on this device\nShared controls', col: COL.P1, idx: 0 },
+        { label: 'ONLINE 2P', sub: 'Create or Join Room\nPlay across devices', col: COL.P2, idx: 1 }
+      ];
+
+      types.forEach((t, i) => {
+        const x = i === 0 ? card0X : card1X;
+        const sel = this.selectedCoopType === t.idx;
+        const bob = sel ? Math.sin(this.tick * 0.12) * 5 : 0;
+        const y = cardY + bob;
+
+        ctx.save();
+        ctx.shadowBlur = sel ? 30 : 6;
+        ctx.shadowColor = sel ? t.col : 'rgba(255,255,255,0.04)';
+        ctx.fillStyle = sel ? '#0d1835' : '#070f21';
+        ctx.strokeStyle = sel ? t.col : '#1b2a4a';
+        ctx.lineWidth = sel ? 3 : 1.2;
+        roundRect(ctx, x, y, cardW, cardH, 14);
+        ctx.fill(); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Icon area
+        const iconCX = x + cardW / 2;
+        const iconY = y + 62;
+
+        if (t.idx === 0) {
+          // Local setup: Keyboard/On-Screen icons together
+          ctx.fillStyle = '#ffd700';
+          ctx.font = '28px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('⌨️', iconCX, iconY + 10);
+        } else {
+          // Online setup: Globe network icon
+          ctx.fillStyle = '#00e5ff';
+          ctx.font = '28px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('🌐', iconCX, iconY + 10);
+        }
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = sel ? t.col : 'rgba(255,255,255,0.7)';
+        ctx.font = `bold 20px Orbitron, sans-serif`;
+        ctx.shadowBlur = sel ? 12 : 0; ctx.shadowColor = t.col;
+        ctx.fillText(t.label, iconCX, y + 130);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '11px Rajdhani, sans-serif';
+        t.sub.split('\n').forEach((line, li) => {
+          ctx.fillText(line, iconCX, y + 155 + li * 16);
+        });
+
+        if (sel) {
+          ctx.fillStyle = t.col;
+          ctx.shadowBlur = 8; ctx.shadowColor = t.col;
+          ctx.beginPath();
+          ctx.arc(iconCX, y + cardH - 18, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+
+        ctx.restore();
+      });
+
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = '12px Orbitron, sans-serif';
+      const hintY = cardY + cardH + 36;
+      if (IS_MOBILE) {
+        ctx.fillText('TAP A CARD  ·  ENTER to confirm', cxs, hintY);
+      } else {
+        ctx.fillText('← → to select   ·   ENTER to confirm   ·   ESC to go back', cxs, hintY);
+      }
+      if ((this.menuBlink / 24 | 0) & 1) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Orbitron, sans-serif';
+        ctx.fillText('Press ENTER / Tap to Select', cxs, hintY + 28);
+      }
+      ctx.restore();
+    }
+
     // --- GAME RENDERING ---
     _renderGame() {
       // bg gradient
@@ -2070,6 +2496,13 @@
       // Mode select tap handling
       if (s === STATE.MODE_SELECT) {
         game.selectedMode = touch.clientX < window.innerWidth / 2 ? 0 : 1;
+        triggerTap();
+        return;
+      }
+
+      // Coop type select tap handling
+      if (s === STATE.COOP_TYPE_SELECT) {
+        game.selectedCoopType = touch.clientX < window.innerWidth / 2 ? 0 : 1;
         triggerTap();
         return;
       }
