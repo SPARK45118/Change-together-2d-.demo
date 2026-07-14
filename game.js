@@ -1422,12 +1422,18 @@
     }
 
     _updateIntro() {
+      // If we are in online mode and we are the client, the host will sync us to STATE.PLAYING.
+      // But we can also let either player tap to skip.
       this.introTimer--;
-      if (this.introTimer <= 0 || keys['Enter'] || keys['Space']) {
+      
+      const skipIntro = this.introTimer <= 0 || keys['Enter'] || keys['Space'] || keys['__TAP__'];
+      if (skipIntro) {
+        keys['__TAP__'] = false;
         document.getElementById('stageIntroOverlay').classList.remove('visible');
         document.getElementById('stageIntroOverlay').classList.add('hidden');
         this.state = STATE.PLAYING;
       }
+      
       // camera idle at spawn
       const midX = this.gameMode === 'multi' ? (this.p1.cx + this.p2.cx) / 2 : this.p1.cx;
       const midY = this.gameMode === 'multi' ? (this.p1.cy + this.p2.cy) / 2 : this.p1.cy;
@@ -2537,7 +2543,7 @@
 
     overlays.forEach(overlay => {
       if (overlay) {
-        overlay.addEventListener('touchstart', (e) => {
+        const handler = (e) => {
           e.preventDefault();
           game.snd.init();
           
@@ -2549,7 +2555,9 @@
           } else {
             triggerTap();
           }
-        }, { passive: false });
+        };
+        overlay.addEventListener('touchstart', handler, { passive: false });
+        overlay.addEventListener('mousedown', handler);
       }
     });
 
