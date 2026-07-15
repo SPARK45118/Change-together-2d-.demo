@@ -1040,6 +1040,32 @@
       }
 
       // Apply state (playing, dying, etc) from host
+      if (data.state !== STATE.INTRO && data.state !== STATE.WAITING_HOST) {
+        const introEl = document.getElementById('stageIntroOverlay');
+        if (introEl && introEl.classList.contains('visible')) {
+          introEl.classList.remove('visible');
+          introEl.classList.add('hidden');
+        }
+      }
+
+      if (data.state === STATE.STAGE_COMPLETE && this.state !== STATE.STAGE_COMPLETE) {
+        this._stageWin();
+      }
+
+      if (data.state === STATE.GAME_OVER && this.state !== STATE.GAME_OVER) {
+        const el = document.getElementById('stageCompleteOverlay');
+        if (el) {
+          el.classList.remove('visible');
+          el.classList.add('hidden');
+        }
+        const gel = document.getElementById('gameCompleteOverlay');
+        if (gel) {
+          document.getElementById('totalTime').textContent = this._fmtTime(data.totTime || this.totTime);
+          document.getElementById('totalDeaths').textContent = data.totDeaths !== undefined ? data.totDeaths : this.totDeaths;
+          gel.classList.remove('hidden'); gel.classList.add('visible');
+        }
+      }
+
       this.state = data.state;
       if (this.state === STATE.DYING) {
         this.deathCD = data.deathCD;
@@ -1052,7 +1078,11 @@
     }
 
     netConfirmStageWin() {
-      this._stageWin();
+      const el = document.getElementById('stageCompleteOverlay');
+      if (el) {
+        el.classList.remove('visible');
+        el.classList.add('hidden');
+      }
     }
 
     // ---- Touch UI ----
@@ -1146,6 +1176,23 @@
 
     // --- stage loading ---
     loadStage(i) {
+      // Hide any potential overlays
+      const completeEl = document.getElementById('stageCompleteOverlay');
+      if (completeEl) {
+        completeEl.classList.remove('visible');
+        completeEl.classList.add('hidden');
+      }
+      const introEl = document.getElementById('stageIntroOverlay');
+      if (introEl) {
+        introEl.classList.remove('visible');
+        introEl.classList.add('hidden');
+      }
+      const completeGameEl = document.getElementById('gameCompleteOverlay');
+      if (completeGameEl) {
+        completeGameEl.classList.remove('visible');
+        completeGameEl.classList.add('hidden');
+      }
+
       const s = STAGES[i];
       this.stageIdx = i;
       this.plats = s.platforms.map(p => ({ ...p }));
@@ -1619,6 +1666,8 @@
           deathCD: this.deathCD,
           stageTime: this.stageTime,
           deaths: this.deaths,
+          totTime: this.totTime,
+          totDeaths: this.totDeaths,
           chainHeat: this.chainHeat,
           tension: this.chain.tension,
           p1: {
