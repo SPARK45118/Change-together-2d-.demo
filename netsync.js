@@ -228,7 +228,7 @@ class NetSync {
       case 'input':
         // Host receives client's P2 inputs
         if (this.isHost) {
-          this.game.netSetClientKeys(data.keys);
+          this.game.netSetClientKeys(data.keys, data.tick);
         }
         break;
 
@@ -270,7 +270,7 @@ class NetSync {
 
     const s = this.game.state;
     if (s === STATE.PLAYING || s === STATE.INTRO || s === STATE.STAGE_COMPLETE ||
-        s === STATE.WAITING_HOST || s === STATE.STAGE_SELECT) {
+      s === STATE.WAITING_HOST || s === STATE.STAGE_SELECT) {
       this.game.state = STATE.MENU;
       alert('Disconnected from peer.');
     }

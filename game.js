@@ -834,6 +834,8 @@
 
       this.net = new NetSync(this);
       this.remoteClientKeys = {}; // Keys received from Client (Host side)
+      this.lastProcessedClientTick = 0;
+      this.stateHistory = [];
 
       this.snd = new SoundMgr();
       this.ptcl = new Particles();
@@ -955,8 +957,9 @@
       this.state = STATE.WAITING_HOST;
     }
 
-    netSetClientKeys(clientKeys) {
+    netSetClientKeys(clientKeys, tick) {
       this.remoteClientKeys = clientKeys;
+      this.lastProcessedClientTick = tick || 0;
     }
 
     netApplyDeath(data) {
@@ -977,27 +980,38 @@
     }
 
     netApplySyncFrame(data) {
-      // Client-side interpolation: lerp toward target instead of snapping
-      const LERP_SPEED = 0.35; // smooth blend with extrapolation
+      if (data.state !== STATE.INTRO && data.state !== STATE.WAITING_HOST) {
+        const introEl = document.getElementById('stageIntroOverlay');
+        if (introEl && introEl.classList.contains('visible')) {
+          introEl.classList.remove('visible');
+          introEl.classList.add('hidden');
+        }
+      }
 
-      // Lerp player positions for smooth visuals
-      this.p1.x = lerp(this.p1.x, data.p1.x, LERP_SPEED);
-      this.p1.y = lerp(this.p1.y, data.p1.y, LERP_SPEED);
-      this.p1.vx = data.p1.vx;
-      this.p1.vy = data.p1.vy;
-      this.p1.gnd = data.p1.gnd;
-      this.p1.face = data.p1.face;
-      this.p1.inv = data.p1.inv;
-      this.p1.atExit = data.p1.atExit;
+      if (data.state === STATE.STAGE_COMPLETE && this.state !== STATE.STAGE_COMPLETE) {
+        this._stageWin();
+      }
 
-      this.p2.x = lerp(this.p2.x, data.p2.x, LERP_SPEED);
-      this.p2.y = lerp(this.p2.y, data.p2.y, LERP_SPEED);
-      this.p2.vx = data.p2.vx;
-      this.p2.vy = data.p2.vy;
-      this.p2.gnd = data.p2.gnd;
-      this.p2.face = data.p2.face;
-      this.p2.inv = data.p2.inv;
-      this.p2.atExit = data.p2.atExit;
+      if (data.state === STATE.GAME_OVER && this.state !== STATE.GAME_OVER) {
+        const el = document.getElementById('stageCompleteOverlay');
+        if (el) {
+          el.classList.remove('visible');
+          el.classList.add('hidden');
+        }
+        const gel = document.getElementById('gameCompleteOverlay');
+        if (gel) {
+          document.getElementById('totalTime').textContent = this._fmtTime(data.totTime || this.totTime);
+          document.getElementById('totalDeaths').textContent = data.totDeaths !== undefined ? data.totDeaths : this.totDeaths;
+          gel.classList.remove('hidden'); gel.classList.add('visible');
+        }
+      }
+
+      // Sync non-predicted stats
+      this.chainHeat = data.chainHeat;
+      this.stageTime = data.stageTime;
+      this.deaths = data.deaths;
+      document.getElementById('deathCount').textContent = this.deaths;
+      this.chain.tension = data.tension;
 
       // Sync platforms
       if (data.plats) {
@@ -1023,47 +1037,83 @@
         });
       }
 
-      // Sync chain & environment metrics
-      this.chainHeat = data.chainHeat;
-      this.stageTime = data.stageTime;
-      this.deaths = data.deaths;
-      document.getElementById('deathCount').textContent = this.deaths;
+      // SERVER RECONCILIATION
+      const historyEntry = this.stateHistory.find(h => h.tick === data.clientTick);
 
-      this.chain.tension = data.tension;
-      if (data.pts) {
+      if (historyEntry) {
+        // Compare our predicted local player (P2) position at that historical tick with the Host's authoritative position
+        const dx = data.p2.x - historyEntry.p2.x;
+        const dy = data.p2.y - historyEntry.p2.y;
+        const distSq = dx * dx + dy * dy;
+
+        // If prediction error is too large (desync > 0.8 pixels), perform reconciliation
+        if (distSq > 0.64) {
+          // Snap positions to Host's authoritative states for that historical frame
+          this.p1.x = data.p1.x;
+          this.p1.y = data.p1.y;
+          this.p1.vx = data.p1.vx;
+          this.p1.vy = data.p1.vy;
+          this.p1.gnd = data.p1.gnd;
+          this.p1.face = data.p1.face;
+
+          this.p2.x = data.p2.x;
+          this.p2.y = data.p2.y;
+          this.p2.vx = data.p2.vx;
+          this.p2.vy = data.p2.vy;
+          this.p2.gnd = data.p2.gnd;
+          this.p2.face = data.p2.face;
+
+          if (data.pts) {
+            data.pts.forEach((pt, idx) => {
+              if (this.chain.pts[idx]) {
+                this.chain.pts[idx].x = pt.x;
+                this.chain.pts[idx].y = pt.y;
+              }
+            });
+          }
+
+          // Replay all inputs from the history up to the current tick
+          const startIndex = this.stateHistory.findIndex(h => h.tick === data.clientTick);
+          for (let i = startIndex + 1; i < this.stateHistory.length; i++) {
+            const entry = this.stateHistory[i];
+            
+            // Re-run physics step silently (mute sound/visuals during replay)
+            this._runPhysicsStep(null, entry.keys, true);
+
+            // Update history entry with corrected predicted positions
+            entry.p1.x = this.p1.x;
+            entry.p1.y = this.p1.y;
+            entry.p2.x = this.p2.x;
+            entry.p2.y = this.p2.y;
+          }
+        }
+      } else {
+        // Fallback: If history entry not found, just blend P2 smoothly
+        const LERP_SPEED = 0.35;
+        this.p2.x = lerp(this.p2.x, data.p2.x, LERP_SPEED);
+        this.p2.y = lerp(this.p2.y, data.p2.y, LERP_SPEED);
+        this.p2.vx = data.p2.vx;
+        this.p2.vy = data.p2.vy;
+        this.p2.gnd = data.p2.gnd;
+        this.p2.face = data.p2.face;
+      }
+
+      // Smoothly interpolate remote player P1 (controlled by Host) to hide network jitter
+      const INTERP_SPEED = 0.35;
+      this.p1.x = lerp(this.p1.x, data.p1.x, INTERP_SPEED);
+      this.p1.y = lerp(this.p1.y, data.p1.y, INTERP_SPEED);
+      this.p1.vx = data.p1.vx;
+      this.p1.vy = data.p1.vy;
+      this.p1.gnd = data.p1.gnd;
+      this.p1.face = data.p1.face;
+
+      if (data.pts && !historyEntry) {
         data.pts.forEach((pt, idx) => {
           if (this.chain.pts[idx]) {
             this.chain.pts[idx].x = lerp(this.chain.pts[idx].x, pt.x, 0.4);
             this.chain.pts[idx].y = lerp(this.chain.pts[idx].y, pt.y, 0.4);
           }
         });
-      }
-
-      // Apply state (playing, dying, etc) from host
-      if (data.state !== STATE.INTRO && data.state !== STATE.WAITING_HOST) {
-        const introEl = document.getElementById('stageIntroOverlay');
-        if (introEl && introEl.classList.contains('visible')) {
-          introEl.classList.remove('visible');
-          introEl.classList.add('hidden');
-        }
-      }
-
-      if (data.state === STATE.STAGE_COMPLETE && this.state !== STATE.STAGE_COMPLETE) {
-        this._stageWin();
-      }
-
-      if (data.state === STATE.GAME_OVER && this.state !== STATE.GAME_OVER) {
-        const el = document.getElementById('stageCompleteOverlay');
-        if (el) {
-          el.classList.remove('visible');
-          el.classList.add('hidden');
-        }
-        const gel = document.getElementById('gameCompleteOverlay');
-        if (gel) {
-          document.getElementById('totalTime').textContent = this._fmtTime(data.totTime || this.totTime);
-          document.getElementById('totalDeaths').textContent = data.totDeaths !== undefined ? data.totDeaths : this.totDeaths;
-          gel.classList.remove('hidden'); gel.classList.add('visible');
-        }
       }
 
       this.state = data.state;
@@ -1494,36 +1544,7 @@
       // The host will send a 'launch' message when ready
     }
 
-    _updatePlay() {
-      // ---- ONLINE CLIENT: send inputs to host, update local prediction ----
-      if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-        // Send all local inputs every frame — host will apply them to P2
-        this.net.sendState({
-          type: 'input',
-          keys: {
-            ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
-            ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
-            ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
-          }
-        });
-
-        // Run local extrapolation/prediction between sync frames
-        this.p1.x += this.p1.vx;
-        this.p1.y += this.p1.vy;
-        this.p2.x += this.p2.vx;
-        this.p2.y += this.p2.vy;
-
-        // Apply local gravity to velocities
-        this.p1.vy = clamp(this.p1.vy + CONFIG.GRAVITY, -CONFIG.MAX_FALL_SPEED, CONFIG.MAX_FALL_SPEED);
-        this.p2.vy = clamp(this.p2.vy + CONFIG.GRAVITY, -CONFIG.MAX_FALL_SPEED, CONFIG.MAX_FALL_SPEED);
-
-        // Update chain simulation locally so it matches player movement smoothly
-        this.chain.update(this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy, this.plats);
-        return;
-      }
-
-      this.stageTime++;
-
+    _runPhysicsStep(p1Input, p2Input, muteEffects = false) {
       // update moving / disappearing platforms
       for (const p of this.plats) {
         if (p.type === 'moving') {
@@ -1559,7 +1580,6 @@
       }
 
       const isSingle = this.gameMode === 'single';
-      const isOnlineHost = this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost;
 
       // chain forces (multiplayer only)
       let cf = null;
@@ -1570,34 +1590,15 @@
         );
       }
 
-      // ---- Build input sources ----
-      // P1 always reads from local keys (WASD or Arrows — both work for P1)
-      // In online mode, the Host's local keys control P1. Arrow keys are
-      // also mapped to P1 so the host can use either WASD or Arrows.
-      let p1Input = null; // null = use default global keys
-      let p2Input = null;
-
-      if (isOnlineHost) {
-        // Host controls P1: merge both WASD and Arrow keys into P1's keycodes
-        p1Input = {
-          'KeyA': !!(keys['KeyA'] || keys['ArrowLeft']),
-          'KeyD': !!(keys['KeyD'] || keys['ArrowRight']),
-          'KeyW': !!(keys['KeyW'] || keys['ArrowUp'])
-        };
-        // P2 is controlled by remote client inputs
-        const rk = this.remoteClientKeys;
-        p2Input = {
-          'ArrowLeft': !!(rk.ArrowLeft),
-          'ArrowRight': !!(rk.ArrowRight),
-          'ArrowUp': !!(rk.ArrowUp)
-        };
-      }
+      // Setup effect redirection for silent replays
+      const activePtcl = muteEffects ? { emit: () => {} } : this.ptcl;
+      const activeSnd = muteEffects ? { jump: () => {}, land: () => {}, death: () => {}, taut: () => {}, _osc: () => {} } : this.snd;
 
       // Update P1
       const r1 = this.p1.update(this.plats,
         cf ? cf.a.fx : 0, cf ? cf.a.fy : 0,
         cf && cf.a.cx !== undefined ? { cx: cf.a.cx, cy: cf.a.cy } : null,
-        this.ptcl, this.snd, this.wb, p1Input);
+        activePtcl, activeSnd, this.wb, p1Input);
 
       // Update P2 (multiplayer only)
       let r2 = null;
@@ -1605,21 +1606,25 @@
         r2 = this.p2.update(this.plats,
           cf.b.fx, cf.b.fy,
           cf.b.cx !== undefined ? { cx: cf.b.cx, cy: cf.b.cy } : null,
-          this.ptcl, this.snd, this.wb, p2Input);
+          activePtcl, activeSnd, this.wb, p2Input);
       }
 
       // update drones
       const activePlayers = isSingle ? [this.p1] : [this.p1, this.p2];
       for (const d of this.drones) {
         if (d.dead) continue;
-        d.update(activePlayers, this.snd, this.ptcl, () => this._die());
+        d.update(activePlayers, activeSnd, activePtcl, () => {
+          if (!muteEffects) this._die();
+        });
         const checkHit = (p) => {
           const dy = d.y + Math.sin(d.animT * 0.1) * 3;
           if (p.x < d.x + d.w && p.x + p.w > d.x && p.y < dy + d.h && p.y + p.h > dy) {
             if (p.vy > 0 && p.y + p.h - p.vy <= dy + 10) {
               p.vy = CONFIG.JUMP_FORCE * 1.1; p.gnd = false; d.dead = true;
-              this.ptcl.emit(d.x + d.w / 2, dy + d.h / 2, 15, '#ff0033', { sMin: -3, sMax: 3, life: 30, sz: 3 });
-              this.snd.jump();
+              if (!muteEffects) {
+                this.ptcl.emit(d.x + d.w / 2, dy + d.h / 2, 15, '#ff0033', { sMin: -3, sMax: 3, life: 30, sz: 3 });
+                this.snd.jump();
+              }
               return 'bounce';
             } else {
               return 'death';
@@ -1629,7 +1634,10 @@
         };
         const hit1 = checkHit(this.p1);
         const hit2 = !isSingle && checkHit(this.p2);
-        if (hit1 === 'death' || hit2 === 'death') { this._die(); return; }
+        if (hit1 === 'death' || hit2 === 'death') {
+          if (!muteEffects) this._die();
+          return;
+        }
       }
 
       // death checks
@@ -1637,7 +1645,8 @@
       if (r1 === 'death' || (!isSingle && r2 === 'death') ||
         this.p1.hitHazard(this.haz) || (!isSingle && this.p2.hitHazard(this.haz)) ||
         chainSnap) {
-        this._die(); return;
+        if (!muteEffects) this._die();
+        return;
       }
 
       // chain update (multiplayer only)
@@ -1645,7 +1654,7 @@
         this.chain.update(this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy, this.plats);
         if (this.chain.tension > 0.6) {
           this.chainHeat = (this.chainHeat || 0) + 1;
-          if (this.tick % 30 === 0) this.snd.taut();
+          if (!muteEffects && this.tick % 30 === 0) this.snd.taut();
         } else {
           this.chainHeat = Math.max(0, (this.chainHeat || 0) - 2);
         }
@@ -1654,18 +1663,83 @@
       // exit check
       this.p1.atExit = this.p1.inExit(this.exit);
       if (isSingle) {
-        if (this.p1.atExit) this._stageWin();
+        if (this.p1.atExit && !muteEffects) this._stageWin();
       } else {
         this.p2.atExit = this.p2.inExit(this.exit);
-        if (this.p1.atExit && this.p2.atExit) this._stageWin();
+        if (this.p1.atExit && this.p2.atExit && !muteEffects) this._stageWin();
       }
+    }
+
+    _updatePlay() {
+      const isSingle = this.gameMode === 'single';
+      const isOnlineHost = this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost;
+      const isOnlineClient = this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost;
+
+      if (isOnlineClient) {
+        // CLIENT PREDICTION
+        const currentInput = {
+          ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
+          ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
+          ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
+        };
+
+        // Record history entry before local prediction step
+        this.stateHistory.push({
+          tick: this.tick,
+          p1: { x: this.p1.x, y: this.p1.y, vx: this.p1.vx, vy: this.p1.vy, gnd: this.p1.gnd, face: this.p1.face },
+          p2: { x: this.p2.x, y: this.p2.y, vx: this.p2.vx, vy: this.p2.vy, gnd: this.p2.gnd, face: this.p2.face },
+          keys: currentInput
+        });
+        if (this.stateHistory.length > 120) {
+          this.stateHistory.shift();
+        }
+
+        // Send local input packet to Host immediately
+        this.net.sendState({
+          type: 'input',
+          tick: this.tick,
+          keys: currentInput
+        });
+
+        // Run local Client-Side Prediction physics step using local keys for local player (P2)
+        this._runPhysicsStep(null, currentInput, false);
+
+        // Camera follow
+        const mx = (this.p1.cx + this.p2.cx) / 2;
+        const my = (this.p1.cy + this.p2.cy) / 2;
+        this.cam.follow(mx, my, this.wb);
+        return;
+      }
+
+      this.stageTime++;
+
+      // Build input sources
+      let p1Input = null;
+      let p2Input = null;
+
+      if (isOnlineHost) {
+        p1Input = {
+          'KeyA': !!(keys['KeyA'] || keys['ArrowLeft']),
+          'KeyD': !!(keys['KeyD'] || keys['ArrowRight']),
+          'KeyW': !!(keys['KeyW'] || keys['ArrowUp'])
+        };
+        const rk = this.remoteClientKeys;
+        p2Input = {
+          'ArrowLeft': !!(rk.ArrowLeft),
+          'ArrowRight': !!(rk.ArrowRight),
+          'ArrowUp': !!(rk.ArrowUp)
+        };
+      }
+
+      // Run authoritative Host simulation
+      this._runPhysicsStep(p1Input, p2Input, false);
 
       // camera follows midpoint (multi) or P1 (single)
       const mx = isSingle ? this.p1.cx : (this.p1.cx + this.p2.cx) / 2;
       const my = isSingle ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
 
-      // ---- Host → Client sync (throttled to every 3rd tick) ----
+      // Host -> Client sync (sent every frame now for maximum responsiveness)
       if (isOnlineHost) {
         this.net.trySendSync({
           type: 'sync',
@@ -1677,6 +1751,7 @@
           totDeaths: this.totDeaths,
           chainHeat: this.chainHeat,
           tension: this.chain.tension,
+          clientTick: this.lastProcessedClientTick, // Tell client which input frame we processed
           p1: {
             x: this.p1.x, y: this.p1.y, vx: this.p1.vx, vy: this.p1.vy,
             gnd: this.p1.gnd, face: this.p1.face, inv: this.p1.inv, atExit: this.p1.atExit
