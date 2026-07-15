@@ -978,7 +978,7 @@
 
     netApplySyncFrame(data) {
       // Client-side interpolation: lerp toward target instead of snapping
-      const LERP_SPEED = 0.45; // fast but smooth
+      const LERP_SPEED = 0.35; // smooth blend with extrapolation
 
       // Lerp player positions for smooth visuals
       this.p1.x = lerp(this.p1.x, data.p1.x, LERP_SPEED);
@@ -1033,8 +1033,8 @@
       if (data.pts) {
         data.pts.forEach((pt, idx) => {
           if (this.chain.pts[idx]) {
-            this.chain.pts[idx].x = pt.x;
-            this.chain.pts[idx].y = pt.y;
+            this.chain.pts[idx].x = lerp(this.chain.pts[idx].x, pt.x, 0.4);
+            this.chain.pts[idx].y = lerp(this.chain.pts[idx].y, pt.y, 0.4);
           }
         });
       }
@@ -1495,23 +1495,30 @@
     }
 
     _updatePlay() {
-      // ---- ONLINE CLIENT: send inputs to host, don't run physics ----
+      // ---- ONLINE CLIENT: send inputs to host, update local prediction ----
       if (this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost) {
-        // Throttle input sends to every 3rd tick to reduce bandwidth
-        this._inputSendTick++;
-        if (this._inputSendTick >= 3) {
-          this._inputSendTick = 0;
-          // Send all local inputs — host will apply them to P2
-          this.net.sendState({
-            type: 'input',
-            keys: {
-              ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
-              ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
-              ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
-            }
-          });
-        }
-        // Client rendering is driven by netApplySyncFrame — no local physics
+        // Send all local inputs every frame — host will apply them to P2
+        this.net.sendState({
+          type: 'input',
+          keys: {
+            ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
+            ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
+            ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
+          }
+        });
+
+        // Run local extrapolation/prediction between sync frames
+        this.p1.x += this.p1.vx;
+        this.p1.y += this.p1.vy;
+        this.p2.x += this.p2.vx;
+        this.p2.y += this.p2.vy;
+
+        // Apply local gravity to velocities
+        this.p1.vy = clamp(this.p1.vy + CONFIG.GRAVITY, -CONFIG.MAX_FALL_SPEED, CONFIG.MAX_FALL_SPEED);
+        this.p2.vy = clamp(this.p2.vy + CONFIG.GRAVITY, -CONFIG.MAX_FALL_SPEED, CONFIG.MAX_FALL_SPEED);
+
+        // Update chain simulation locally so it matches player movement smoothly
+        this.chain.update(this.p1.cx, this.p1.cy, this.p2.cx, this.p2.cy, this.plats);
         return;
       }
 

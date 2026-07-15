@@ -13,7 +13,7 @@ class NetSync {
     this.connected = false;
 
     // Throttle: only send sync data every N ticks (reduces bandwidth ~66%)
-    this.SYNC_INTERVAL = 3;
+    this.SYNC_INTERVAL = 1;
     this._syncTick = 0;
 
     // Client-side interpolation targets
