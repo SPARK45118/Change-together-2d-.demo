@@ -836,6 +836,7 @@
       this.remoteClientKeys = {}; // Keys received from Client (Host side)
       this.lastProcessedClientTick = 0;
       this.stateHistory = [];
+      this.latestSyncFrame = null;
 
       this.snd = new SoundMgr();
       this.ptcl = new Particles();
@@ -980,6 +981,10 @@
     }
 
     netApplySyncFrame(data) {
+      this.latestSyncFrame = data;
+    }
+
+    _applyBufferedSyncFrame(data) {
       if (data.state !== STATE.INTRO && data.state !== STATE.WAITING_HOST) {
         const introEl = document.getElementById('stageIntroOverlay');
         if (introEl && introEl.classList.contains('visible')) {
@@ -1078,7 +1083,8 @@
             const entry = this.stateHistory[i];
             
             // Re-run physics step silently (mute sound/visuals during replay)
-            this._runPhysicsStep(null, entry.keys, true);
+            // Pass {} as p1Input to prevent reading client keyboard
+            this._runPhysicsStep({}, entry.keys, true);
 
             // Update history entry with corrected predicted positions
             entry.p1.x = this.p1.x;
@@ -1120,11 +1126,6 @@
       if (this.state === STATE.DYING) {
         this.deathCD = data.deathCD;
       }
-
-      // Camera follows midpoint on client too
-      const mx = (this.p1.cx + this.p2.cx) / 2;
-      const my = (this.p1.cy + this.p2.cy) / 2;
-      this.cam.follow(mx, my, this.wb);
     }
 
     netConfirmStageWin() {
@@ -1676,6 +1677,12 @@
       const isOnlineClient = this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost;
 
       if (isOnlineClient) {
+        // Deterministically apply buffered sync frame at the start of the physics step
+        if (this.latestSyncFrame) {
+          this._applyBufferedSyncFrame(this.latestSyncFrame);
+          this.latestSyncFrame = null;
+        }
+
         // CLIENT PREDICTION
         const currentInput = {
           ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
@@ -1702,7 +1709,8 @@
         });
 
         // Run local Client-Side Prediction physics step using local keys for local player (P2)
-        this._runPhysicsStep(null, currentInput, false);
+        // Pass {} as p1Input to prevent reading client keyboard
+        this._runPhysicsStep({}, currentInput, false);
 
         // Camera follow
         const mx = (this.p1.cx + this.p2.cx) / 2;
