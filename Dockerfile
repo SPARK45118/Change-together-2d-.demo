@@ -1,28 +1,32 @@
-# ─────────────────────────────────────────────
-# Chained Together — Static Game Server
-# Uses nginx:alpine (~8 MB) to serve HTML/JS/CSS
-# Compatible with Render's Docker hosting.
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────
+# Anti Gravity (Connectors) — Node.js + Socket.io Server
+# Serves all static game files AND handles WebSocket relay
+# Compatible with Railway, Render, Fly.io, DigitalOcean, etc.
+# ─────────────────────────────────────────────────────────
 
-FROM nginx:alpine
+# Use slim Node.js image (Alpine = ~50 MB total)
+FROM node:20-alpine
 
-# Remove the default nginx welcome page
-RUN rm -rf /usr/share/nginx/html/*
+# Create app directory
+WORKDIR /app
 
-# Copy all game files into the nginx web root
-COPY index.html  /usr/share/nginx/html/
-COPY style.css   /usr/share/nginx/html/
-COPY stages.js   /usr/share/nginx/html/
-COPY game.js     /usr/share/nginx/html/
+# Copy dependency manifest first (layer caching — only reinstalls when deps change)
+COPY package.json package-lock.json* ./
 
-# Custom nginx config: sets correct MIME types,
-# enables gzip, and adds security/cache headers
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Install production dependencies only
+RUN npm install --omit=dev
 
-# Render expects the app to listen on PORT env var (default 10000).
-# nginx.conf reads $PORT at container start via envsubst.
-ENV PORT=10000
-EXPOSE 10000
+# Copy all game files
+COPY server.js   ./
+COPY netsync.js  ./
+COPY index.html  ./
+COPY style.css   ./
+COPY game.js     ./
+COPY stages.js   ./
 
-# Use envsubst to inject $PORT before nginx starts
-CMD ["/bin/sh", "-c", "envsubst '$PORT' < /etc/nginx/conf.d/default.conf > /tmp/default.conf && cp /tmp/default.conf /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+# Railway/Render inject $PORT at runtime (default fallback: 3000)
+ENV PORT=3000
+EXPOSE 3000
+
+# Start the Socket.io relay server
+CMD ["node", "server.js"]

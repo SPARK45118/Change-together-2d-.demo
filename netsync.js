@@ -1,208 +1,172 @@
 // ============================================================
-// CHAINED TOGETHER — Peer-to-Peer Network Sync Layer
-// Optimized WebRTC + public signaling connector
+// CONNECTORS — Socket.io Network Sync Layer  (Anti-Lag Build)
+// Low-latency WebSocket relay — minimum jitter, minimum delay
 // ============================================================
 
 class NetSync {
   constructor(game) {
-    this.game = game;
-    this.peer = null;
-    this.conn = null;
-    this.isHost = false;
-    this.roomCode = '';
+    this.game      = game;
+    this.socket    = null;
+    this.isHost    = false;
+    this.roomCode  = '';
     this.connected = false;
 
-    // Throttle: only send sync data every N ticks (reduces bandwidth ~66%)
-    this.SYNC_INTERVAL = 1;
-    this._syncTick = 0;
+    // ── Send-rate controls ─────────────────────────────────────────────────
+    // Host sync: send authoritative state every N physics ticks (60 ticks/s).
+    //   SYNC_INTERVAL = 2  →  30 sync packets / second  (was 60 — halved)
+    this.SYNC_INTERVAL = 2;
+    this._syncTick     = 0;
 
-    // Client-side interpolation targets
-    this._lerpTargets = null; // { p1, p2, cam } set by incoming sync frames
-    this._lerpAlpha = 0;
-
-    this.peerjsScriptLoaded = false;
+    // Client input: send local keys every N ticks.
+    //   INPUT_INTERVAL = 2  →  30 input packets / second (was 60 — halved)
+    this.INPUT_INTERVAL = 2;
+    this._inputTick     = 0;
   }
 
-  // Load PeerJS library dynamically to avoid offline start issues
+  // Returns the server URL (same origin works locally and in production)
+  _getServerUrl() {
+    return window.location.origin;
+  }
+
+  // Load Socket.io client and connect to the server
   async init() {
-    if (this.peerjsScriptLoaded) return Promise.resolve();
+    if (this.socket && this.socket.connected) return Promise.resolve();
 
     return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-      script.onload = () => {
-        this.peerjsScriptLoaded = true;
-        resolve();
+      const connect = () => {
+        this.socket = window.io(this._getServerUrl(), {
+          // Force WebSocket only — skip the HTTP long-poll upgrade handshake
+          transports: ['websocket'],
+
+          // Allow auto-reconnect on brief network hiccups
+          reconnection:        true,
+          reconnectionAttempts: 3,
+          reconnectionDelay:   500,
+
+          // Connection timeout
+          timeout: 8000,
+        });
+
+        this.socket.on('connect', () => {
+          console.log('[NetSync] Connected to server:', this.socket.id);
+          resolve();
+        });
+
+        this.socket.on('connect_error', (err) => {
+          reject(new Error('Cannot connect to game server: ' + err.message));
+        });
       };
-      script.onerror = () => reject(new Error('Failed to load PeerJS. Check internet.'));
+
+      // Socket.io client is served by our server at /socket.io/socket.io.js
+      if (window.io) {
+        connect();
+        return;
+      }
+
+      const script    = document.createElement('script');
+      script.src      = '/socket.io/socket.io.js';
+      script.onload   = connect;
+      script.onerror  = () => reject(new Error('Failed to load Socket.io client.'));
       document.head.appendChild(script);
     });
   }
 
-  // Generate a random room code (6 alphanumeric characters)
-  _generateCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
-  }
-
-  // Host a new WebRTC room
+  // Host: create a new room and get a room code
   async hostRoom() {
     await this.init();
     this.isHost = true;
-    this.roomCode = this._generateCode();
 
-    const hostId = 'chained-together-' + this.roomCode;
-    this.peer = new Peer(hostId, {
-      debug: 0,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
-    });
+    return new Promise((resolve) => {
+      this.socket.emit('create_room');
 
-    return new Promise((resolve, reject) => {
-      this.peer.on('open', (id) => {
-        console.log('[NetSync] Room hosted:', id);
-        this._setupHostListeners();
-        resolve(this.roomCode);
-      });
-
-      this.peer.on('error', (err) => {
-        console.error('[NetSync] Peer error:', err);
-        if (err.type === 'unavailable-id') {
-          this.roomCode = this._generateCode();
-          this.peer.destroy();
-          this.hostRoom().then(resolve).catch(reject);
-        } else {
-          reject(err);
-        }
+      this.socket.once('room_created', ({ code }) => {
+        this.roomCode = code;
+        console.log('[NetSync] Room created:', code);
+        this._setupListeners();
+        resolve(code);
       });
     });
   }
 
-  // Join an existing WebRTC room
+  // Client: join an existing room by code
   async joinRoom(code) {
     await this.init();
-    this.isHost = false;
+    this.isHost   = false;
     this.roomCode = code.toUpperCase().trim();
 
-    this.peer = new Peer({
-      debug: 0,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
-    });
-
-    const targetHostId = 'chained-together-' + this.roomCode;
-
     return new Promise((resolve, reject) => {
-      this.peer.on('open', () => {
-        console.log('[NetSync] Connecting to host:', targetHostId);
+      const timeout = setTimeout(() => {
+        if (!this.connected) {
+          reject(new Error('Connection timed out. Check the room code.'));
+        }
+      }, 10000);
 
-        // Use reliable: false (unreliable/UDP mode) for minimum latency and real-time responsiveness.
-        // To handle packet loss for initial critical setup states (like launch/joined), we will send connection setup messages reliably.
-        const conn = this.peer.connect(targetHostId, {
-          reliable: false
-        });
+      this.socket.emit('join_room', { code: this.roomCode });
 
-        this._setupConnection(conn);
-
-        const timeout = setTimeout(() => {
-          if (!this.connected) {
-            this.disconnect();
-            reject(new Error('Connection timed out.'));
-          }
-        }, 10000);
-
-        conn.on('open', () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-
-        conn.on('error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
+      this.socket.once('room_joined', () => {
+        clearTimeout(timeout);
+        console.log('[NetSync] Joined room:', this.roomCode);
+        this._setupListeners();
+        this._onConnected();
+        resolve();
       });
 
-      this.peer.on('error', (err) => {
-        reject(err);
+      this.socket.once('join_error', ({ message }) => {
+        clearTimeout(timeout);
+        reject(new Error(message));
       });
     });
   }
 
-  _setupHostListeners() {
-    this.peer.on('connection', (conn) => {
-      if (this.connected) {
-        conn.close();
-        return;
-      }
-      this._setupConnection(conn);
-    });
-  }
+  _setupListeners() {
+    // Host: wait for client to join, then start the game
+    if (this.isHost) {
+      this.socket.once('player_joined', () => {
+        console.log('[NetSync] Player 2 joined!');
+        this._onConnected();
+      });
+    }
 
-  _setupConnection(conn) {
-    this.conn = conn;
-
-    conn.on('open', () => {
-      this.connected = true;
-      console.log('[NetSync] Data channel open!');
-
-      // Hide lobby overlays
-      document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
-      document.getElementById('connectingOverlay').classList.add('hidden');
-
-      if (this.isHost) {
-        // Send 'joined' multiple times with a small delay to guarantee client receives it and doesn't get stuck in lobby
-        let attempts = 0;
-        const interval = setInterval(() => {
-          if (this.conn && this.conn.open) {
-            this.sendState({ type: 'joined', role: 'client' });
-          }
-          attempts++;
-          if (attempts >= 5 || !this.connected) clearInterval(interval);
-        }, 150);
-
-        // Host goes to stage select
-        this.game.netLaunchGame();
-      } else {
-        // Client enters waiting state
-        this.game.netEnterWaiting();
-      }
-    });
-
-    conn.on('data', (data) => {
+    // Both: receive relayed game messages from the peer
+    this.socket.on('relayed', (data) => {
       this._handleNetworkData(data);
     });
 
-    conn.on('close', () => {
-      console.log('[NetSync] Connection closed by peer.');
-      this.disconnect();
-    });
-
-    conn.on('error', (err) => {
-      console.error('[NetSync] Connection error:', err);
+    // Both: peer left the room
+    this.socket.on('peer_disconnected', () => {
+      console.log('[NetSync] Peer disconnected.');
       this.disconnect();
     });
   }
 
-  // Send data to peer
-  sendState(payload) {
-    if (this.conn && this.conn.open) {
-      this.conn.send(payload);
+  _onConnected() {
+    this.connected = true;
+    console.log('[NetSync] Game connection established!');
+
+    // Hide lobby overlays
+    document.getElementById('multiplayerLobbyOverlay').classList.add('hidden');
+    document.getElementById('connectingOverlay').classList.add('hidden');
+
+    if (this.isHost) {
+      // Send 'joined' ONCE — client acknowledges and transitions itself.
+      // (Previous code fired this 5× in a setInterval which caused duplicate state transitions.)
+      this.sendState({ type: 'joined', role: 'client' });
+      this.game.netLaunchGame();
+    } else {
+      this.game.netEnterWaiting();
     }
   }
 
-  // Called by the game loop every tick — throttles actual sends
+  // ── Send helpers ───────────────────────────────────────────────────────────
+
+  // Send game state/input to the peer (relayed via server)
+  sendState(payload) {
+    if (this.socket && this.socket.connected && this.connected) {
+      this.socket.emit('relay', payload);
+    }
+  }
+
+  // Throttled HOST sync — called every physics tick; only fires every SYNC_INTERVAL ticks
   trySendSync(payload) {
     this._syncTick++;
     if (this._syncTick >= this.SYNC_INTERVAL) {
@@ -211,6 +175,16 @@ class NetSync {
     }
   }
 
+  // Throttled CLIENT input — called every physics tick; only fires every INPUT_INTERVAL ticks
+  trySendInput(payload) {
+    this._inputTick++;
+    if (this._inputTick >= this.INPUT_INTERVAL) {
+      this._inputTick = 0;
+      this.sendState(payload);
+    }
+  }
+
+  // ── Receive dispatcher ─────────────────────────────────────────────────────
   _handleNetworkData(data) {
     if (!data || !data.type) return;
 
@@ -228,7 +202,7 @@ class NetSync {
       case 'input':
         // Host receives client's P2 inputs
         if (this.isHost) {
-          this.game.netSetClientKeys(data.keys, data.tick);
+          this.game.netSetClientKeys(data.keys);
         }
         break;
 
@@ -254,13 +228,9 @@ class NetSync {
 
   disconnect() {
     this.connected = false;
-    if (this.conn) {
-      try { this.conn.close(); } catch (e) { /* ignore */ }
-      this.conn = null;
-    }
-    if (this.peer) {
-      try { this.peer.destroy(); } catch (e) { /* ignore */ }
-      this.peer = null;
+    if (this.socket) {
+      try { this.socket.disconnect(); } catch (e) { /* ignore */ }
+      this.socket = null;
     }
 
     // Hide overlays, return to title

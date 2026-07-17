@@ -834,8 +834,6 @@
 
       this.net = new NetSync(this);
       this.remoteClientKeys = {}; // Keys received from Client (Host side)
-      this.lastProcessedClientTick = 0;
-      this.stateHistory = [];
       this.latestSyncFrame = null;
 
       this.snd = new SoundMgr();
@@ -958,9 +956,8 @@
       this.state = STATE.WAITING_HOST;
     }
 
-    netSetClientKeys(clientKeys, tick) {
+    netSetClientKeys(clientKeys) {
       this.remoteClientKeys = clientKeys;
-      this.lastProcessedClientTick = tick || 0;
     }
 
     netApplyDeath(data) {
@@ -981,10 +978,12 @@
     }
 
     netApplySyncFrame(data) {
+      // Buffer the frame — applied at the start of the next physics tick
       this.latestSyncFrame = data;
     }
 
     _applyBufferedSyncFrame(data) {
+      // ── State transitions ──────────────────────────────────────────────────
       if (data.state !== STATE.INTRO && data.state !== STATE.WAITING_HOST) {
         const introEl = document.getElementById('stageIntroOverlay');
         if (introEl && introEl.classList.contains('visible')) {
@@ -999,10 +998,7 @@
 
       if (data.state === STATE.GAME_OVER && this.state !== STATE.GAME_OVER) {
         const el = document.getElementById('stageCompleteOverlay');
-        if (el) {
-          el.classList.remove('visible');
-          el.classList.add('hidden');
-        }
+        if (el) { el.classList.remove('visible'); el.classList.add('hidden'); }
         const gel = document.getElementById('gameCompleteOverlay');
         if (gel) {
           document.getElementById('totalTime').textContent = this._fmtTime(data.totTime || this.totTime);
@@ -1011,117 +1007,86 @@
         }
       }
 
-      // Sync non-predicted stats
+      // ── Stats ──────────────────────────────────────────────────────────────
       this.chainHeat = data.chainHeat;
       this.stageTime = data.stageTime;
-      this.deaths = data.deaths;
+      this.deaths    = data.deaths;
       document.getElementById('deathCount').textContent = this.deaths;
       this.chain.tension = data.tension;
 
-      // Sync platforms
+      // ── Platforms & drones (snap — they don't need smooth lerp) ────────────
       if (data.plats) {
         data.plats.forEach((pData, idx) => {
           if (this.plats[idx]) {
-            this.plats[idx].x = pData.x;
-            this.plats[idx].y = pData.y;
-            this.plats[idx].gone = pData.gone;
+            this.plats[idx].x       = pData.x;
+            this.plats[idx].y       = pData.y;
+            this.plats[idx].gone    = pData.gone;
             this.plats[idx].opacity = pData.opacity;
           }
         });
       }
-
-      // Sync drones
       if (data.drones) {
         data.drones.forEach((dData, idx) => {
           if (this.drones[idx]) {
-            this.drones[idx].x = dData.x;
-            this.drones[idx].y = dData.y;
-            this.drones[idx].dead = dData.dead;
+            this.drones[idx].x          = dData.x;
+            this.drones[idx].y          = dData.y;
+            this.drones[idx].dead       = dData.dead;
             this.drones[idx].alertState = dData.alertState;
           }
         });
       }
 
-      // SERVER RECONCILIATION
-      const historyEntry = this.stateHistory.find(h => h.tick === data.clientTick);
+      // ── Player positions: smooth lerp to authoritative host state ──────────
+      // LERP_CLOSE: gentle catch-up for small errors (< 8px) — avoids visual pop
+      // LERP_FAR:   fast snap when significantly desynced (> 40px) — avoids rubber-band drift
+      const _lerpPlayer = (cur, target) => {
+        const delta = target - cur;
+        const absDelta = delta < 0 ? -delta : delta;
+        if (absDelta < 1) return target;           // snap when essentially at target
+        if (absDelta > 40) return lerp(cur, target, 0.55); // large gap — fast catch-up
+        return lerp(cur, target, 0.35);            // normal — smooth interpolation
+      };
 
-      if (historyEntry) {
-        // Compare our predicted local player (P2) position at that historical tick with the Host's authoritative position
-        const dx = data.p2.x - historyEntry.p2.x;
-        const dy = data.p2.y - historyEntry.p2.y;
-        const distSq = dx * dx + dy * dy;
-
-        // If prediction error is too large (desync > 0.8 pixels), perform reconciliation
-        if (distSq > 0.64) {
-          // Snap positions to Host's authoritative states for that historical frame
-          this.p1.x = data.p1.x;
-          this.p1.y = data.p1.y;
-          this.p1.vx = data.p1.vx;
-          this.p1.vy = data.p1.vy;
-          this.p1.gnd = data.p1.gnd;
-          this.p1.face = data.p1.face;
-
-          this.p2.x = data.p2.x;
-          this.p2.y = data.p2.y;
-          this.p2.vx = data.p2.vx;
-          this.p2.vy = data.p2.vy;
-          this.p2.gnd = data.p2.gnd;
-          this.p2.face = data.p2.face;
-
-          if (data.pts) {
-            data.pts.forEach((pt, idx) => {
-              if (this.chain.pts[idx]) {
-                this.chain.pts[idx].x = pt.x;
-                this.chain.pts[idx].y = pt.y;
-              }
-            });
-          }
-
-          // Replay all inputs from the history up to the current tick
-          const startIndex = this.stateHistory.findIndex(h => h.tick === data.clientTick);
-          for (let i = startIndex + 1; i < this.stateHistory.length; i++) {
-            const entry = this.stateHistory[i];
-            
-            // Re-run physics step silently (mute sound/visuals during replay)
-            // Pass {} as p1Input to prevent reading client keyboard
-            this._runPhysicsStep({}, entry.keys, true);
-
-            // Update history entry with corrected predicted positions
-            entry.p1.x = this.p1.x;
-            entry.p1.y = this.p1.y;
-            entry.p2.x = this.p2.x;
-            entry.p2.y = this.p2.y;
-          }
-        }
-      } else {
-        // Fallback: If history entry not found, just blend P2 smoothly
-        const LERP_SPEED = 0.35;
-        this.p2.x = lerp(this.p2.x, data.p2.x, LERP_SPEED);
-        this.p2.y = lerp(this.p2.y, data.p2.y, LERP_SPEED);
-        this.p2.vx = data.p2.vx;
-        this.p2.vy = data.p2.vy;
-        this.p2.gnd = data.p2.gnd;
-        this.p2.face = data.p2.face;
-      }
-
-      // Smoothly interpolate remote player P1 (controlled by Host) to hide network jitter
-      const INTERP_SPEED = 0.35;
-      this.p1.x = lerp(this.p1.x, data.p1.x, INTERP_SPEED);
-      this.p1.y = lerp(this.p1.y, data.p1.y, INTERP_SPEED);
-      this.p1.vx = data.p1.vx;
-      this.p1.vy = data.p1.vy;
-      this.p1.gnd = data.p1.gnd;
+      // P1 = host player
+      this.p1.x    = _lerpPlayer(this.p1.x, data.p1.x);
+      this.p1.y    = _lerpPlayer(this.p1.y, data.p1.y);
+      this.p1.vx   = data.p1.vx;
+      this.p1.vy   = data.p1.vy;
+      this.p1.gnd  = data.p1.gnd;
       this.p1.face = data.p1.face;
+      this.p1.inv  = data.p1.inv;
+      this.p1.atExit = data.p1.atExit;
 
-      if (data.pts && !historyEntry) {
+      // P2 = local player on client — lerp to authoritative position
+      // (client sends inputs to host; host simulates and sends back truth)
+      this.p2.x    = _lerpPlayer(this.p2.x, data.p2.x);
+      this.p2.y    = _lerpPlayer(this.p2.y, data.p2.y);
+      this.p2.vx   = data.p2.vx;
+      this.p2.vy   = data.p2.vy;
+      this.p2.gnd  = data.p2.gnd;
+      this.p2.face = data.p2.face;
+      this.p2.inv  = data.p2.inv;
+      this.p2.atExit = data.p2.atExit;
+
+      // ── Chain points: lerp smoothly, skip micro-jitter ────────────────────
+      if (data.pts) {
         data.pts.forEach((pt, idx) => {
           if (this.chain.pts[idx]) {
-            this.chain.pts[idx].x = lerp(this.chain.pts[idx].x, pt.x, 0.4);
-            this.chain.pts[idx].y = lerp(this.chain.pts[idx].y, pt.y, 0.4);
+            const dx = pt.x - this.chain.pts[idx].x;
+            const dy = pt.y - this.chain.pts[idx].y;
+            // Skip lerp when the delta is sub-pixel — prevents jitter accumulation
+            if (dx * dx + dy * dy < 4) {
+              this.chain.pts[idx].x = pt.x;
+              this.chain.pts[idx].y = pt.y;
+            } else {
+              this.chain.pts[idx].x = lerp(this.chain.pts[idx].x, pt.x, 0.4);
+              this.chain.pts[idx].y = lerp(this.chain.pts[idx].y, pt.y, 0.4);
+            }
           }
         });
       }
 
+      // ── Game state ────────────────────────────────────────────────────────
       this.state = data.state;
       if (this.state === STATE.DYING) {
         this.deathCD = data.deathCD;
@@ -1348,6 +1313,19 @@
 
       // run fixed physics ticks
       while (this._accumulator >= this._fixedStep) {
+        // ── Snapshot moving-platform positions BEFORE physics update ──────────
+        // This lets us interpolate visually between the previous and current
+        // physics state, eliminating the discrete-step stutter on high-refresh
+        // displays (120Hz, 144Hz) without changing physics at all.
+        if (this.plats) {
+          for (const p of this.plats) {
+            if (p.type === 'moving') {
+              p.prevX = p.x;
+              p.prevY = p.y;
+            }
+          }
+        }
+
         this.tick++;
         this._updateFade();
         this._update();
@@ -1355,8 +1333,12 @@
         this._accumulator -= this._fixedStep;
       }
 
+      // Render interpolation alpha: how far between the last and next physics
+      // tick are we? 0 = just finished a tick, 1 = one full tick has elapsed.
+      const renderAlpha = this._accumulator / this._fixedStep;
+
       // render once per animation frame
-      this._render();
+      this._render(renderAlpha);
       requestAnimationFrame(this._loop);
     }
 
@@ -1504,16 +1486,13 @@
         this.startFade(1, () => {
           document.getElementById('hud').classList.remove('hidden');
           this.loadStage(this.selectedStageIdx);
-          // If in WebRTC online mode and we are the host, notify the guest client
+          // ── FIX: was guarded by WebRTC `this.net.conn.open` which is always
+          // undefined in Socket.io — stage launch message was NEVER sent.
+          // Now uses `this.net.connected` which is correctly set by NetSync.
           if (this.gameMode === 'multi' && this.coopType === 'online' && this.net.isHost) {
-            let attempts = 0;
-            const interval = setInterval(() => {
-              if (this.net.conn && this.net.conn.open) {
-                this.net.sendState({ type: 'launch', stageIdx: this.selectedStageIdx });
-              }
-              attempts++;
-              if (attempts >= 4) clearInterval(interval);
-            }, 100);
+            if (this.net.connected) {
+              this.net.sendState({ type: 'launch', stageIdx: this.selectedStageIdx });
+            }
           }
         });
       }
@@ -1677,42 +1656,22 @@
       const isOnlineClient = this.gameMode === 'multi' && this.coopType === 'online' && !this.net.isHost;
 
       if (isOnlineClient) {
-        // Deterministically apply buffered sync frame at the start of the physics step
+        // Apply buffered authoritative frame from host at start of tick
         if (this.latestSyncFrame) {
           this._applyBufferedSyncFrame(this.latestSyncFrame);
           this.latestSyncFrame = null;
         }
 
-        // CLIENT PREDICTION
+        // Send current inputs to the host — throttled to 30/s via trySendInput
+        // (was 60/s every frame, flooding the relay and adding queue delay)
         const currentInput = {
-          ArrowLeft: !!(keys['ArrowLeft'] || keys['KeyA']),
+          ArrowLeft:  !!(keys['ArrowLeft']  || keys['KeyA']),
           ArrowRight: !!(keys['ArrowRight'] || keys['KeyD']),
-          ArrowUp: !!(keys['ArrowUp'] || keys['KeyW'])
+          ArrowUp:    !!(keys['ArrowUp']    || keys['KeyW'])
         };
+        this.net.trySendInput({ type: 'input', keys: currentInput });
 
-        // Record history entry before local prediction step
-        this.stateHistory.push({
-          tick: this.tick,
-          p1: { x: this.p1.x, y: this.p1.y, vx: this.p1.vx, vy: this.p1.vy, gnd: this.p1.gnd, face: this.p1.face },
-          p2: { x: this.p2.x, y: this.p2.y, vx: this.p2.vx, vy: this.p2.vy, gnd: this.p2.gnd, face: this.p2.face },
-          keys: currentInput
-        });
-        if (this.stateHistory.length > 120) {
-          this.stateHistory.shift();
-        }
-
-        // Send local input packet to Host immediately
-        this.net.sendState({
-          type: 'input',
-          tick: this.tick,
-          keys: currentInput
-        });
-
-        // Run local Client-Side Prediction physics step using local keys for local player (P2)
-        // Pass {} as p1Input to prevent reading client keyboard
-        this._runPhysicsStep({}, currentInput, false);
-
-        // Camera follow
+        // Camera follow — track both players
         const mx = (this.p1.cx + this.p2.cx) / 2;
         const my = (this.p1.cy + this.p2.cy) / 2;
         this.cam.follow(mx, my, this.wb);
@@ -1747,19 +1706,29 @@
       const my = isSingle ? this.p1.cy : (this.p1.cy + this.p2.cy) / 2;
       this.cam.follow(mx, my, this.wb);
 
-      // Host -> Client sync (sent every frame now for maximum responsiveness)
+      // Host -> Client: send authoritative state — throttled to 30/s (was 60/s)
       if (isOnlineHost) {
+        // ── Compressed payload helpers ────────────────────────────────────────
+        // Only include platform data when something has actually changed.
+        // Moving/disappearing plats change every frame; static ones never change.
+        const hasMovingPlats    = this.plats.some(p => p.type === 'moving');
+        const hasVanishingPlats = this.plats.some(p => p.type === 'disappearing');
+        const sendPlats         = hasMovingPlats || hasVanishingPlats;
+
+        // Only send chain points when the chain is active (not fully slack).
+        // At tension < 0.05 the chain hangs static — skip sending 17 point pairs.
+        const sendChainPts = this.chain.tension > 0.05;
+
         this.net.trySendSync({
-          type: 'sync',
-          state: this.state,
-          deathCD: this.deathCD,
+          type:      'sync',
+          state:     this.state,
+          deathCD:   this.deathCD,
           stageTime: this.stageTime,
-          deaths: this.deaths,
-          totTime: this.totTime,
+          deaths:    this.deaths,
+          totTime:   this.totTime,
           totDeaths: this.totDeaths,
           chainHeat: this.chainHeat,
-          tension: this.chain.tension,
-          clientTick: this.lastProcessedClientTick, // Tell client which input frame we processed
+          tension:   this.chain.tension,
           p1: {
             x: this.p1.x, y: this.p1.y, vx: this.p1.vx, vy: this.p1.vy,
             gnd: this.p1.gnd, face: this.p1.face, inv: this.p1.inv, atExit: this.p1.atExit
@@ -1768,9 +1737,11 @@
             x: this.p2.x, y: this.p2.y, vx: this.p2.vx, vy: this.p2.vy,
             gnd: this.p2.gnd, face: this.p2.face, inv: this.p2.inv, atExit: this.p2.atExit
           },
-          plats: this.plats.map(p => ({ x: p.x, y: p.y, gone: p.gone, opacity: p.opacity })),
-          drones: this.drones.map(d => ({ x: d.x, y: d.y, dead: d.dead, alertState: d.alertState })),
-          pts: this.chain.pts.map(pt => ({ x: pt.x, y: pt.y }))
+          // Send drone state only when drones exist
+          drones: this.drones.length ? this.drones.map(d => ({ x: d.x, y: d.y, dead: d.dead, alertState: d.alertState })) : undefined,
+          // Conditionally include platform and chain data
+          plats: sendPlats ? this.plats.map(p => ({ x: p.x, y: p.y, gone: p.gone, opacity: p.opacity })) : undefined,
+          pts:   sendChainPts ? this.chain.pts.map(pt => ({ x: pt.x, y: pt.y })) : undefined,
         });
       }
     }
@@ -1873,7 +1844,7 @@
     // RENDERING
     // ============================================================
 
-    _render() {
+    _render(renderAlpha = 1) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (this.state === STATE.MENU) { this._renderMenu(); }
@@ -1881,7 +1852,7 @@
       else if (this.state === STATE.COOP_TYPE_SELECT) { this._renderCoopTypeSelect(); }
       else if (this.state === STATE.STAGE_SELECT) { this._renderStageSelect(); }
       else if (this.state === STATE.WAITING_HOST) { this._renderWaitingHost(); }
-      else { this._renderGame(); }
+      else { this._renderGame(renderAlpha); }
 
       // fade
       if (this.fade > 0) {
@@ -2399,7 +2370,7 @@
     }
 
     // --- GAME RENDERING ---
-    _renderGame() {
+    _renderGame(renderAlpha = 1) {
       // bg gradient
       // background gradient (cached)
       if (!this.bgGradient) {
@@ -2414,7 +2385,7 @@
       ctx.save();
       this.cam.apply(ctx);
 
-      this._drawPlatforms();
+      this._drawPlatforms(renderAlpha);
       this._drawDecorations();
       this._drawHazards();
       for (const d of this.drones) d.draw(ctx);
@@ -2461,7 +2432,7 @@
       }
     }
 
-    _drawPlatforms() {
+    _drawPlatforms(renderAlpha = 1) {
       // Use a lower shadow blur on mobile to reduce GPU fill-rate cost
       const platBlur = IS_MOBILE ? 6 : 12;
       for (const p of this.plats) {
@@ -2472,6 +2443,17 @@
           case 'moving': col = COL.PLAT_MOVE; break;
           case 'disappearing': col = COL.PLAT_VANISH; break;
           default: col = COL.PLAT;
+        }
+
+        // ── Render interpolation for moving platforms ─────────────────────────
+        // Visually lerp between the previous and current physics position using
+        // the sub-step alpha. Physics state (p.x, p.y) is NEVER modified here —
+        // only the draw coordinates. This removes stutter at 120/144Hz.
+        let drawX = p.x;
+        let drawY = p.y;
+        if (p.type === 'moving' && p.prevX !== undefined) {
+          drawX = lerp(p.prevX, p.x, renderAlpha);
+          drawY = lerp(p.prevY, p.y, renderAlpha);
         }
 
         ctx.save();
@@ -2495,27 +2477,27 @@
         } else if (p.style === 'forest') {
           ctx.fillStyle = '#0f3818';
         }
-        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.fillRect(drawX, drawY, p.w, p.h);
 
         ctx.strokeStyle = col; ctx.lineWidth = 2;
         ctx.shadowBlur = platBlur; ctx.shadowColor = col;
-        ctx.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
+        ctx.strokeRect(drawX + 0.5, drawY + 0.5, p.w - 1, p.h - 1);
 
         if (p.style === 'mine') {
           // stable hash from position so colour doesn't flicker each frame
           const oreBlue = ((p.x * 7 + p.y * 13) & 1) === 0;
           ctx.fillStyle = oreBlue ? '#00e5ff' : '#ffd700';
           if (p.w > 40 && p.h > 40) {
-            ctx.fillRect(p.x + 10, p.y + 10, 4, 4);
-            ctx.fillRect(p.x + p.w - 14, p.y + 20, 4, 4);
+            ctx.fillRect(drawX + 10, drawY + 10, 4, 4);
+            ctx.fillRect(drawX + p.w - 14, drawY + 20, 4, 4);
           }
         } else if (p.style === 'forest') {
           ctx.fillStyle = '#33cc55';
-          ctx.fillRect(p.x, p.y - 3, p.w, 4);
+          ctx.fillRect(drawX, drawY - 3, p.w, 4);
         }
 
         ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + p.w, p.y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(drawX, drawY); ctx.lineTo(drawX + p.w, drawY); ctx.stroke();
         ctx.shadowBlur = 0;
         ctx.restore();
       }
